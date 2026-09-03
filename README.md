@@ -11,21 +11,23 @@ them.
 
 ## Which project do I use?
 
-```
-                    Can you receive COM's HTTPS webhook on a public endpoint?
-                                          │
-             ┌────────────────────────────┴────────────────────────────┐
-            no / prefer managed cloud                          yes, I have an edge
-                     │                                                   │
-        ┌────────────┴───────────┐                        ┌─────────────┴─────────────┐
-   Use a managed cloud?                                  Simplest possible footprint?
-        │            │                                    │                          │
-       yes          no, fully on-prem                    yes                    already using
-        │            │                                    │                     OpsRamp / ServiceNow?
-   com-event-relay   com-event-bridge                com-event-bridge                 │
-   (+ shim)          (single box)                    (single box)              use the NATIVE
-                                                                                COM integration
-                                                                                (no code needed)
+```mermaid
+flowchart TD
+    Start([Forward COM webhook events]) --> Q1{Can COM reach a public<br/>HTTPS endpoint you host?}
+
+    Q1 -->|No / prefer managed cloud| Q2{Allowed to use a<br/>managed cloud?}
+    Q1 -->|Yes, I have an edge| Q3{Already running OpsRamp<br/>or ServiceNow?}
+
+    Q2 -->|Yes| Relay[com-event-relay<br/>cloud relay + on-prem shim]
+    Q2 -->|No, fully on-prem| Bridge[com-event-bridge<br/>single on-prem box]
+
+    Q3 -->|Yes| Native[Native COM integration<br/>no shim/relay needed]
+    Q3 -->|No| Bridge
+
+    classDef pick fill:#01a982,stroke:#00775b,color:#fff;
+    classDef native fill:#7630ea,stroke:#5a1fb0,color:#fff;
+    class Relay,Bridge pick;
+    class Native native;
 ```
 
 | Option | Project | When to use |
