@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local config & secrets — never commit real values
+.env
+*.env
+!*.env.example
+local.settings.json
+
+# Runtime data (spool / dedup SQLite DBs)
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Tooling / editors
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

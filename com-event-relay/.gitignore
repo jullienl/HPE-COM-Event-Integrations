@@ -1,0 +1,16 @@
+# Secrets / local config
+.env
+*.env
+!.env.example
+local.settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python_packages/
+
+# OS
+.DS_Store
+Thumbs.db

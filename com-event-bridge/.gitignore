@@ -1,0 +1,18 @@
+# Python / env
+.env
+*.env
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local state (spool + dedup SQLite DBs)
+*.db
+*.db-journal
+/data/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

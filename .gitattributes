@@ -1,0 +1,14 @@
+# Normalize text files to LF in the repo
+* text=auto eol=lf
+
+# Shell scripts must stay LF (they run on Linux hosts / in containers)
+*.sh text eol=lf
+
+# Windows-specific stays CRLF
+*.ps1 text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

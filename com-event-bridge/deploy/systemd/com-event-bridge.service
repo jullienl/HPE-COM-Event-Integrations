@@ -1,0 +1,41 @@
+# systemd unit for running com-event-bridge natively (no Docker) on a bare host.
+#
+# Assumes:
+#   - the app lives in /opt/com-event-bridge/bridge
+#   - a virtualenv at /opt/com-event-bridge/venv (python -m venv + pip install -r)
+#   - config in /etc/com-event-bridge/bridge.env (chmod 600, owned by 'bridge')
+#   - an nginx TLS reverse proxy in front (see deploy/nginx/)
+#
+# Install:
+#   sudo useradd --system --home /opt/com-event-bridge --shell /usr/sbin/nologin bridge
+#   sudo cp com-event-bridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now com-event-bridge
+
+[Unit]
+Description=COM event bridge (single-box on-prem COM webhook -> target)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bridge
+Group=bridge
+WorkingDirectory=/opt/com-event-bridge/bridge
+EnvironmentFile=/etc/com-event-bridge/bridge.env
+# Bind to localhost only — nginx terminates TLS and proxies to us.
+ExecStart=/opt/com-event-bridge/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Writable path for the spool + dedup SQLite DBs.
+ReadWritePaths=/var/lib/com-event-bridge
+Environment=SPOOL_PATH=/var/lib/com-event-bridge/spool.db
+Environment=DEDUP_DB_PATH=/var/lib/com-event-bridge/dedup.db
+
+[Install]
+WantedBy=multi-user.target

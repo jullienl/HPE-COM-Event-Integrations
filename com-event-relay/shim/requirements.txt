@@ -1,0 +1,8 @@
+# Shared COM event logic (normaliser, dedup, target adapters) lives in
+# com-event-core, which also brings httpx. In Docker it is installed from local
+# source (../../com-event-core) by the shim Dockerfile. For local dev, run:
+#   pip install -e ../../com-event-core
+# Azure backend
+azure-servicebus==7.12.3
+# AWS backend
+boto3==1.35.24

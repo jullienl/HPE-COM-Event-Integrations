@@ -1,0 +1,6 @@
+# Bridge web layer. Shared logic (adapters, normaliser, dedup) + httpx come from
+# com-event-core. Spool uses stdlib sqlite3. No cloud SDKs (no queue).
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+# com-event-core is installed from local source (../../com-event-core) by the
+# bridge Dockerfile. For local dev, run:  pip install -e ../../com-event-core

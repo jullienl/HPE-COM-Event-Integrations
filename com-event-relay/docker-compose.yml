@@ -1,0 +1,51 @@
+# Local development / demo stack for the COM event relay + shim.
+#
+# Starts the relay (public receiver) and, optionally, the shim (outbound
+# consumer) built from ./relay and ./shim, reading config from their .env files
+# (copy each .env.example to .env first). This is for local testing/demos —
+# production runs on Azure Container Apps / AWS App Runner (relay) and a
+# container host near the target (shim), not compose.
+#
+# Usage:
+#   cp relay/.env.example relay/.env   # then edit COM_SHARED_SECRET etc.
+#   cp shim/.env.example shim/.env     # then set TARGET + queue + target config
+#   docker compose up --build          # relay only
+#   docker compose --profile shim up --build   # relay + shim
+#
+# Smoke test the relay (in another terminal):
+#   curl -i localhost:8080/healthz
+#   curl -i localhost:8080/com/webhook -H "x-compute-ops-mgmt-verification-challenge: abc123"
+#
+# Note: relay and shim exchange events via a real Service Bus/SQS queue (set the
+# same queue in both .env files) — compose does not run a local broker.
+
+services:
+  relay:
+    build:
+      # Context is the repo root (..) so images are self-contained; the shim
+      # build also needs the sibling com-event-core package.
+      context: ..
+      dockerfile: com-event-relay/relay/Dockerfile
+    image: com-event-relay:local
+    ports:
+      - "8080:8080"
+    env_file:
+      - relay/.env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # Outbound-only consumer. Enabled with: docker compose --profile shim up
+  shim:
+    build:
+      context: ..
+      dockerfile: com-event-relay/shim/Dockerfile
+    image: com-event-shim:local
+    env_file:
+      - shim/.env
+    restart: unless-stopped
+    profiles: ["shim"]
