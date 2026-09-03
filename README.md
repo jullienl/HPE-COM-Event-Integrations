@@ -74,8 +74,6 @@ package is installed into the shim/bridge images from local source.
 
 - Each project has its own README with quick start, configuration, and deployment.
 - On-prem hardening for the single box: [com-event-bridge/HARDENING.md](com-event-bridge/HARDENING.md).
-- Design/background decks and appendices: [com-event-relay/docs](com-event-relay/docs).
-- Publishing, CI/CD, and releasing: [MAINTAINERS.md](MAINTAINERS.md).
 
 ## License
 

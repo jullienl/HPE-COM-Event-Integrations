@@ -362,9 +362,6 @@ ghcr.io/<owner>/com-event-shim:latest       # shim   (or a pinned version, e.g. 
 The deploy scripts pull these images automatically. To build locally instead,
 see [Build the image](#build-the-image) above.
 
-> Maintaining/publishing this project (repo setup, CI/CD, releasing images) is
-> documented separately in [MAINTAINERS.md](../MAINTAINERS.md) at the repo root.
-
 ## Configuration (env vars)
 
 | Var                     | Required | Notes                                              |
@@ -464,17 +461,11 @@ com-event-relay/
     azure/deploy-relay-azure.sh
     aws/deploy-relay-aws.sh
   docker-compose.yml        # local dev/demo stack (relay + optional shim profile)
-  docs/                     # design/background docs (archived reference material)
-    COM-Integration-Options-Deck.md      # customer design deck (Marp)
-    Appendix-A-Deployment-Guide.md       # original OBM Linux-shim deployment
-    Appendix-B-Reference-Implementation.md # original OBM reference code
-    Appendix-C-Option3-Deployment-Guide.md # cloud-relay + on-prem-shim design
   README.md                 # this file (users)
 ```
 
 > The shim image installs the shared **[com-event-core](../com-event-core)**
-> package. CI workflows and the maintainer/release guide live at the **monorepo
-> root**: `../.github/workflows/` and [../MAINTAINERS.md](../MAINTAINERS.md).
+> package. CI workflows live at the **monorepo root**: `../.github/workflows/`.
 
 ## Companion: a single-box on-prem thin shim
 

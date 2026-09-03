@@ -33,6 +33,12 @@ htmlcov/
 .vscode/
 .idea/
 
+# Private design/background docs — kept locally, not published
+com-event-relay/docs/
+
+# Private maintainer guide — kept locally, not published
+MAINTAINERS.md
+
 # OS
 .DS_Store
 Thumbs.db
