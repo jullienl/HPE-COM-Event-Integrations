@@ -114,8 +114,11 @@ async def webhook(request: Request):
         raise HTTPException(status_code=413, detail="payload too large")
 
     # 4) Stamp a correlation id and enqueue the raw body with metadata.
-    #    Transient enqueue failures surface as 503 so COM retries; we never
-    #    silently drop an event.
+    #    COM webhooks are fire-and-forget (one POST, no retries), so the relay's
+    #    whole job is to capture the event into the durable queue immediately. A
+    #    transient enqueue failure returns 503, but COM will NOT resend it AND a
+    #    5xx counts against webhook health (10 consecutive failures -> webhook
+    #    DISABLED). A highly available managed queue keeps enqueue failures rare.
     relay_event_id = str(uuid.uuid4())
     event_type = request.headers.get("x-compute-ops-mgmt-event-type", "unknown")
     properties = {
@@ -127,7 +130,7 @@ async def webhook(request: Request):
     try:
         publisher.publish(body, properties)
     except Exception:
-        log.exception("enqueue failed; asking COM to retry",
+        log.exception("enqueue failed; returning 503 (COM does not retry — event lost)",
                       extra={"relay_event_id": relay_event_id, "status": 503})
         raise HTTPException(status_code=503, detail="temporarily unable to enqueue")
 

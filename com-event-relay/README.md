@@ -6,6 +6,24 @@ endpoint** — on **Azure or AWS**, from a single image.
 
 > AI-generated reference implementation. Review and harden before production use.
 
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [When you don't need this: native COM integrations](#when-you-dont-need-this-native-com-integrations-opsramp-servicenow)
+- [What this project does, in detail](#what-this-project-does-in-detail)
+- [Cloud-agnostic by design](#cloud-agnostic-by-design)
+- [Choosing a deployment model](#choosing-a-deployment-model)
+- [Relay behavior](#relay-behavior)
+- [Security model](#security-model)
+- [Quick start](#quick-start)
+- [Local development with Docker Compose](#local-development-with-docker-compose)
+- [Prebuilt images](#prebuilt-images)
+- [Configuration (env vars)](#configuration-env-vars)
+- [The shim (target adapters)](#the-shim-target-adapters)
+- [Project layout](#project-layout)
+- [Companion: a single-box on-prem thin shim](#companion-a-single-box-on-prem-thin-shim)
+- [Roadmap](#roadmap)
+
 ## Why this exists
 
 COM can POST webhook events to a public HTTPS URL. Many customers can't (or won't)
@@ -122,9 +140,15 @@ A request goes through these stages:
    header and written to the logs, giving you **end-to-end traceability**
    (COM → relay → queue → shim → target).
 
-5. **Reliable hand-off.** The raw body is published to the queue. If the enqueue
-   fails (transient broker issue), the relay returns `503` so **COM retries** —
-   events are never silently dropped. A successful enqueue returns `202`.
+5. **Reliable hand-off.** The raw body is published to the queue. COM webhooks are
+   **fire-and-forget** (one POST, no retries), so the relay's job is to capture
+   each event into the durable queue *immediately*; a successful enqueue returns
+   `202`. If the enqueue fails (transient broker issue), the relay returns `503` —
+   but **COM will not resend it**, and a `5xx` is not free: COM counts webhook
+   failures and after **10 consecutive failures disables the webhook** (stopping
+   *all* delivery until you manually re-enable it). A highly available managed
+   queue keeps enqueue failures rare so both the loss window and the health impact
+   stay tiny.
 
 The queue in the middle **decouples** the public edge from the internal consumer:
 if the on-prem shim is down or slow, events wait durably in the queue instead of
@@ -138,6 +162,33 @@ and the platform stops routing traffic to it.
 **Observability.** All logs are emitted as **structured JSON** (one object per
 line) with the correlation id and status, so they parse cleanly in Application
 Insights, CloudWatch, or any OTLP pipeline.
+
+### Relay vs shim: who does what
+
+The relay model splits the pipeline in two, with the **queue as the durable
+buffer** between them. The relay only *accepts safely at the edge*; the shim does
+all the *deliver-with-resilience* work (the same logic the single-box
+[com-event-bridge](../com-event-bridge) runs in one process):
+
+| Stage | Relay (public cloud edge) | Shim (near the target) |
+|---|:---:|:---:|
+| Verification handshake | ✅ | — |
+| Authentication (shared-secret header) | ✅ | — |
+| Input hardening (body-size cap → `413`) | ✅ | — |
+| Enqueue → cloud queue (publish) | ✅ | — |
+| Health / readiness endpoints | ✅ | — (no HTTP server) |
+| Dequeue ← cloud queue (consume) | — | ✅ |
+| Normalise → `CanonicalEvent` | — | ✅ |
+| De-duplication (SQLite TTL store) | — | ✅ |
+| Correlation (raise / clear lifecycle) | id stamp only (tracing) | ✅ |
+| Forward to target adapter | — | ✅ |
+| Retry / redelivery | — | ✅ (queue `abandon`) |
+| Durable buffer | — **the cloud queue sits between them** — | |
+
+The relay is **stateless and fire-and-forget** (enqueue + ack, never touches the
+target); the shim is **outbound-only** (pulls from the queue, no inbound ports).
+Because the queue is at-least-once, the shim can receive a redelivered message
+after an `abandon` — which is exactly what its de-dup store guards against.
 
 ## Cloud-agnostic by design
 
@@ -256,7 +307,7 @@ any of these models — use the native COM integration described
 | POST with valid `x-shim-secret`                         | `202` (enqueued) + `x-relay-event-id`|
 | POST with missing/invalid secret                        | `401`                                |
 | POST body larger than `MAX_BODY_BYTES`                  | `413`                                |
-| POST but the queue enqueue fails (transient)            | `503` (COM retries)                  |
+| POST but the queue enqueue fails (transient)            | `503` (event lost — COM does not retry) |
 | `GET /healthz` (liveness)                               | `200` + `{"status":"ok"}`            |
 | `GET /readyz` (readiness — checks queue reachable)      | `200` ready / `503` not ready        |
 
@@ -280,8 +331,13 @@ infrastructure:
 - **Input hardening.** Request bodies are capped at `MAX_BODY_BYTES` (default
   256 KB) and rejected with `413` to blunt oversized-payload abuse.
 
-- **No silent drops.** A transient enqueue failure returns `503` so COM retries;
-  a bad secret returns `401` and nothing is enqueued.
+- **Fail loud, not silent.** COM is fire-and-forget and does **not** retry, so a
+  failed enqueue can't be recovered by COM — the relay returns `503` and logs it
+  rather than pretending success. Note a `5xx` is not consequence-free: COM tracks
+  webhook failures and **10 consecutive failures disables the webhook**, so the
+  managed queue's high availability (keeping enqueue failures rare) protects both
+  against event loss *and* against the webhook being disabled. A bad secret
+  returns `401` and nothing is enqueued.
 
 - **Rate limiting / DDoS is a platform concern.** The relay is deliberately
   stateless and does not implement per-client throttling (an in-app limiter can't
@@ -501,9 +557,9 @@ this project, so behaviour toward COM and your target is identical.
 - **You host and secure a public endpoint** (reverse proxy as TLS terminator).
 - **You own the certificate lifecycle** (issuing, renewing, rotating a CA-signed
   certificate) and the usual host operations (firewall, hardening, patching, HA).
-- **No durable buffering.** Without a queue, delivery relies on in-process
-  buffering and COM's own retries, so a prolonged target outage can risk dropped
-  events unless you add a local on-disk spool.
+- **No durable buffering.** Without a queue, and since **COM does not retry**, an
+  in-process delivery failure drops the event — a prolonged target outage risks
+  lost events unless you add a local on-disk spool (see com-event-bridge).
 
 **Choosing between the models:**
 

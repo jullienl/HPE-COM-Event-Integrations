@@ -9,6 +9,18 @@ them.
 > These are **reference/sample** implementations meant to be forked and adapted,
 > not a supported HPE product.
 
+## Contents
+
+- [Why this project exists](#why-this-project-exists)
+- [Key capabilities](#key-capabilities)
+- [Which project do I use?](#which-project-do-i-use)
+- [Projects in this repo](#projects-in-this-repo)
+- [Targets supported](#targets-supported)
+- [COM resource types & the raise / clear lifecycle](#com-resource-types--the-raise--clear-lifecycle)
+- [Images](#images)
+- [Documentation](#documentation)
+- [License](#license)
+
 ## Why this project exists
 
 COM can **push events** (server health transitions, alerts) to any HTTPS endpoint
@@ -144,6 +156,35 @@ in the [relay README](com-event-relay/README.md#choosing-a-deployment-model).
   `splunk`, `webhook`). A mapping or adapter fix is made once here and both
   consumers get it.
 
+### Which component does what
+
+The single-box **bridge** does the whole pipeline in one process. The **relay**
+model splits that same pipeline into a public **relay** (accept at the edge) and
+an outbound-only **shim** (deliver to the target), with a **cloud queue** as the
+durable buffer between them:
+
+| Feature | Bridge (single box) | Relay (cloud edge) | Shim (near target) |
+|---|:---:|:---:|:---:|
+| Handshake | ✅ | ✅ | — |
+| Authentication (shared secret) | ✅ | ✅ | — |
+| Input hardening (body cap) | ✅ | ✅ | — |
+| Enqueue → queue | — | ✅ | — |
+| Dequeue ← queue | — | — | ✅ |
+| Normalisation → `CanonicalEvent` | ✅ | — | ✅ |
+| De-duplication | ✅ | — | ✅ |
+| Correlation (raise / clear) | ✅ | id stamp only | ✅ |
+| Forward to target | ✅ | — | ✅ |
+| Retry / redelivery | via spool | — | ✅ (queue `abandon`) |
+| Durable buffer | on-disk spool | — the cloud queue sits between relay & shim — | |
+| Health / readiness endpoints | ✅ | ✅ | — (no HTTP) |
+| Inbound port required | ✅ (`443`) | ✅ (`443`, cloud-managed) | — (outbound-only) |
+
+Normalisation, de-dup, and the adapters come from `com-event-core`, so the bridge
+and the shim run identical delivery logic — the relay/shim split just moves the
+public edge into the cloud. See the
+[relay README](com-event-relay/README.md#relay-vs-shim-who-does-what) for the
+relay/shim detail.
+
 ## Targets supported
 
 All adapters live in `com-event-core`, so **every target works in both projects**
@@ -176,8 +217,8 @@ Adding a new target is a small adapter in `com-event-core` (map `CanonicalEvent`
 >
 > **Why a `halo` adapter?** HaloITSM has no native COM path, and the pipeline's
 > built-in **de-duplication** means a repeated COM event won't open a second
-> ticket for the same fault — one ticket per real problem, not one per webhook
-> retry.
+> ticket for the same fault — one ticket per real problem, not one per duplicate
+> or redelivered event.
 
 ## COM resource types & the raise / clear lifecycle
 
@@ -241,6 +282,9 @@ package is installed into the shim/bridge images from local source.
 
 ## Documentation
 
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — every process (handshake, auth, input
+  hardening, enqueue/dequeue, normalisation, de-dup, correlation, forwarding,
+  retry, spool, health) mapped to the exact file that implements it.
 - Each project has its own README with quick start, configuration, and deployment.
 - On-prem hardening for the single box: [com-event-bridge/HARDENING.md](com-event-bridge/HARDENING.md).
 

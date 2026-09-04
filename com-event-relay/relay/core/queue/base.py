@@ -19,8 +19,10 @@ class QueuePublisher(ABC):
     def publish(self, body: bytes, properties: dict[str, str] | None = None) -> None:
         """Enqueue a raw event payload with optional metadata properties.
 
-        Must raise on failure so the relay can return 5xx and let COM retry
-        (no silent drops). `properties` are attached as message metadata
+        Must raise on failure so the relay can return 5xx. COM is fire-and-forget
+        and will not resend, and a 5xx also counts against webhook health (10
+        consecutive failures -> webhook DISABLED), so keep the backend highly
+        available. `properties` are attached as message metadata
         (Service Bus application properties / SQS message attributes) so the
         shim can filter/route without re-parsing the body."""
 
