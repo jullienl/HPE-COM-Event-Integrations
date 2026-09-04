@@ -47,14 +47,89 @@ flowchart TD
   stack for the public TLS edge.
 - **[com-event-core](com-event-core)** — the shared package used by the shim and
   the bridge: the COM event **normaliser** (`CanonicalEvent`), the **de-dup**
-  store, and all **target adapters** (`obm`, `servicenow`, `splunk`, `webhook`).
-  A mapping or adapter fix is made once here and both consumers get it.
+  store, and all **target adapters** (`obm`, `servicenow`, `opsramp`, `halo`,
+  `splunk`, `webhook`). A mapping or adapter fix is made once here and both
+  consumers get it.
 
 ## Targets supported
 
-`obm` · `servicenow` · `splunk` · `webhook` — selected per deployment with
-`TARGET=<name>`. Adding a new target is a small adapter in `com-event-core`
-(map `CanonicalEvent` → the target's API); see that project's README.
+All adapters live in `com-event-core`, so **every target works in both projects**
+(com-event-relay's shim *and* com-event-bridge) — pick one per deployment with
+`TARGET=<name>`. The pipeline handles the COM handshake, auth, normalisation,
+**de-duplication**, retry, and (relay) queue / (bridge) spool; an adapter only
+maps the `CanonicalEvent` to the target's API.
+
+| `TARGET` | Layer | Role | Auth | In both projects | Native COM path? | Close on clear | Key config |
+|----------|-------|------|------|:----------------:|:----------------:|:--------------:|------------|
+| `obm` | ITOM (event) | OpenText Operations Bridge Manager event | Basic | ✅ | — | ✅ severity→normal + closed (correlation key) | `OBM_EVENT_API_URL`, `OBM_USER`, `OBM_PASSWORD` |
+| `servicenow` | ITSM | Event Management (`em_event`) or incident creation | Basic | ✅ | ✅ native* | ✅ em_event Clear / incident resolve (lookup by correlation) | `SNOW_INSTANCE`, `SNOW_USER`, `SNOW_PASSWORD`, `SNOW_TABLE` |
+| `opsramp` | ITOM / AIOps | Alert / event ingestion | OAuth2 | ✅ | ✅ native* | ✅ state→Ok (alertKey correlation) | `OPSRAMP_API_URL`, `OPSRAMP_TENANT_ID`, `OPSRAMP_KEY`, `OPSRAMP_SECRET` |
+| `halo` | ITSM | HaloITSM ticket / incident creation | OAuth2 | ✅ | — | ✅ look up open ticket by `thirdpartyref` and set closed status | `HALO_API_URL`, `HALO_CLIENT_ID`, `HALO_CLIENT_SECRET` |
+| `splunk` | SIEM / log | HTTP Event Collector (HEC) ingestion | HEC token | ✅ | — | ➖ clear logged as its own event (`action=clear`) | `SPLUNK_HEC_URL`, `SPLUNK_HEC_TOKEN` |
+| `webhook` | Generic | POST the canonical event JSON to any URL | Optional header | ✅ | — | ➖ clear delivered as its own event (`action=clear`) | `WEBHOOK_URL` (+ optional `WEBHOOK_AUTH_HEADER`/`_VALUE`) |
+
+Adding a new target is a small adapter in `com-event-core` (map `CanonicalEvent`
+→ the target's API); see [com-event-core/README.md](com-event-core/README.md#adding-a-new-target).
+
+> \* **ServiceNow and OpsRamp have native COM integrations** (purpose-built COM
+> paths — ServiceNow for incident creation, OpsRamp for event/alert ingestion).
+> If COM can reach them directly, point COM straight at the native integration and
+> **skip this project**. Use the bundled `servicenow` / `opsramp` adapters only for
+> the **decoupled** path this project provides: keeping the internal network
+> unexposed, feeding enriched/normalised events, or fanning the same COM stream out
+> to several targets at once. Details in the
+> [com-event-relay README](com-event-relay/README.md#when-you-dont-need-this-native-com-integrations-opsramp-servicenow).
+>
+> **Why a `halo` adapter?** HaloITSM has no native COM path, and the pipeline's
+> built-in **de-duplication** means a repeated COM event won't open a second
+> ticket for the same fault — one ticket per real problem, not one per webhook
+> retry.
+
+## COM resource types & the raise / clear lifecycle
+
+The normaliser dispatches on the payload `type` and handles two COM resource
+types plus a generic fallback:
+
+| Resource type | COM `type` (payload) | What it is | How raise vs clear is detected |
+|---------------|----------------------|------------|--------------------------------|
+| **Server health** | `compute-ops-mgmt/server` | A server whose `hardware.health.summary` transitioned | **raise** when health ≠ OK; **clear** when it returns to OK |
+| **Alert** | `compute-ops-mgmt/alert` | An individual COM alert (create / delete) | **raise** on create; **clear** when `cleared`/`clearedAt` is set or the alert is deleted |
+| Generic | anything else | Any other COM resource | Passed through as a raise; adapters still deliver it |
+
+> **Namespace quirk:** COM's `eventFilter` grammar uses the short namespace
+> (`compute-ops/server`) while the **delivered payload** `type` is the long one
+> (`compute-ops-mgmt/server`). The normaliser matches on the type **suffix**
+> (`…/server`, `…/alert`), so both spellings work.
+
+**Getting clears requires a second COM webhook.** A COM webhook only fires for
+the transition its `eventFilter` selects, so recovery ("clear") needs a *second*
+webhook pointing at the **same** relay/bridge URL with the opposite transition.
+Configure both:
+
+Server health — raise then clear:
+
+```text
+# raise: health left OK
+type eq 'compute-ops/server' and old/hardware/health/summary eq 'OK' and changed/hardware/health/summary eq True
+# clear: health returned to OK
+type eq 'compute-ops/server' and new/hardware/health/summary eq 'OK' and changed/hardware/health/summary eq True
+```
+
+Alerts — raise then clear:
+
+```text
+# raise: alert created
+type eq 'compute-ops/alert' and operation eq 'Created'
+# clear: alert deleted / resolved
+type eq 'compute-ops/alert' and operation eq 'Deleted'
+```
+
+Each event carries a stable **`correlation_key`** (`server:<serial>` or
+`alert:<id>`) so a later clear closes exactly the object the raise opened —
+that's what the "Close on clear" column above builds on. De-duplication is keyed
+on `correlation_key + action + severity`, so a raise and its clear are never
+collapsed, but repeats of either are still suppressed. See the
+[com-event-relay README](com-event-relay/README.md) for the full webhook setup.
 
 ## Images
 

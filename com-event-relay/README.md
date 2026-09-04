@@ -72,13 +72,14 @@ generic COM webhook mechanism this relay handles. When it fits your workflow
 (COM-driven incident creation), use the native integration and skip the relay
 entirely.
 
-> **Note:** this project still ships a `servicenow` shim adapter (ServiceNow Table
-> API → `em_event` / `incident`). Use it only when you specifically want the
-> **webhook/queue-decoupled** path — for example to feed ServiceNow **Event
-> Management** with enriched/normalised events, to keep the internal network
-> unexposed, or to route the same COM event stream to ServiceNow *and* other
-> targets. For plain COM-driven incident creation, prefer the native integration
-> above.
+> **Note:** this project still ships `servicenow` and `opsramp` shim adapters
+> (ServiceNow Table API → `em_event` / `incident`; OpsRamp Alerts API via OAuth2).
+> Use them only when you specifically want the **webhook/queue-decoupled** path —
+> for example to feed ServiceNow **Event Management** or OpsRamp **alerts** with
+> enriched/normalised events, to keep the internal network unexposed, or to route
+> the same COM event stream to several targets at once. For plain COM-driven
+> incident creation (ServiceNow) or native event ingestion (OpsRamp), prefer the
+> native integrations above.
 
 > **Bottom line:** use this relay when the target is **not** a natively supported
 > COM destination (OBM, Splunk, a generic webhook, ...), or when you need the
@@ -385,7 +386,7 @@ the queue — no inbound ports.
 One image serves **every target and both clouds**; you pick behaviour with env
 vars:
 
-- `TARGET` selects the adapter: `obm` | `servicenow` | `splunk` | `webhook`
+- `TARGET` selects the adapter: `obm` | `servicenow` | `opsramp` | `halo` | `splunk` | `webhook`
 - `QUEUE_BACKEND` selects the queue: `servicebus` | `sqs` (must match the relay)
 
 For each message the shim: parses + **normalises** the COM event into a neutral
@@ -421,7 +422,7 @@ docker compose --profile shim up --build
 
 | Var                      | Required            | Notes                                             |
 |--------------------------|---------------------|---------------------------------------------------|
-| `TARGET`                 | no                  | `obm` (default) / `servicenow` / `splunk` / `webhook`. |
+| `TARGET`                 | no                  | `obm` (default) / `servicenow` / `opsramp` / `halo` / `splunk` / `webhook`. |
 | `QUEUE_BACKEND`          | no                  | `servicebus` (default) or `sqs` — must match relay.|
 | `SERVICE_BUS_CONNECTION` | if azure            | **Listen**-scoped connection string.              |
 | `QUEUE_NAME`             | if azure            | Queue to drain, e.g. `com-events`.                |
@@ -431,6 +432,8 @@ docker compose --profile shim up --build
 | `TARGET_TIMEOUT`         | no                  | Per-target HTTP timeout (s). Default `15`.        |
 | `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD`     | if `TARGET=obm`        | OBM Event REST API + Basic auth.        |
 | `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD`       | if `TARGET=servicenow` | `SNOW_TABLE` optional (`em_event` default / `incident`). |
+| `OPSRAMP_API_URL` / `OPSRAMP_TENANT_ID` / `OPSRAMP_KEY` / `OPSRAMP_SECRET` | if `TARGET=opsramp` | OAuth2 client-credentials; `OPSRAMP_SERVICE_NAME` optional. |
+| `HALO_API_URL` / `HALO_CLIENT_ID` / `HALO_CLIENT_SECRET`  | if `TARGET=halo`       | OAuth2 client-credentials; `HALO_TENANT` / `HALO_TICKET_TYPE_ID` optional. |
 | `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN`                 | if `TARGET=splunk`     | HEC endpoint + token.                   |
 | `WEBHOOK_URL`                                         | if `TARGET=webhook`    | Optional `WEBHOOK_AUTH_HEADER`/`_VALUE`.|
 

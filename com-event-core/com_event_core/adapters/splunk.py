@@ -38,6 +38,7 @@ class SplunkAdapter(TargetAdapter):
             "event": {
                 "event_id": e.event_id,
                 "operation": e.operation,
+                "action": e.action,
                 "title": e.title,
                 "severity": e.severity,
                 "serial": e.resource_serial,
@@ -46,6 +47,9 @@ class SplunkAdapter(TargetAdapter):
                 "time_created": e.time_created,
                 "tags": e.tags,
                 "dedup_key": e.dedup_key,
+                "correlation_key": e.correlation_key,
+                "description": e.description,
+                "resolution": e.resolution,
             },
         }
         if self._index:

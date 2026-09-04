@@ -14,6 +14,8 @@ from .base import TargetAdapter
 _ADAPTERS = {
     "obm": ("com_event_core.adapters.obm", "ObmAdapter"),
     "servicenow": ("com_event_core.adapters.servicenow", "ServiceNowAdapter"),
+    "opsramp": ("com_event_core.adapters.opsramp", "OpsRampAdapter"),
+    "halo": ("com_event_core.adapters.halo", "HaloAdapter"),
     "splunk": ("com_event_core.adapters.splunk", "SplunkAdapter"),
     "webhook": ("com_event_core.adapters.webhook", "WebhookAdapter"),
 }

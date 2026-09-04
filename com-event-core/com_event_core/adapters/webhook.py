@@ -1,9 +1,10 @@
 """Generic webhook adapter.
 
 Catch-all target: POSTs the canonical event as JSON to any URL. Covers the long
-tail of systems (including HaloITSM/HaloPSA via an inbound webhook, custom
-middleware, iPaaS, etc.) without a bespoke adapter. Optionally attaches a static
-auth header.
+tail of systems (custom middleware, iPaaS, an inbound webhook on any ITSM/ITOM
+tool without a bespoke adapter, etc.) without target-specific code. Optionally
+attaches a static auth header. (HaloITSM has a dedicated `halo` adapter; use this
+only for systems that don't have one.)
 """
 
 from __future__ import annotations

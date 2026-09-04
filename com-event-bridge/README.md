@@ -42,7 +42,7 @@ COM ──443──►  handshake ─► auth ─► normalize ─► deliver �
    `413` over that); malformed JSON is rejected with `400`.
 4. **Normalise.** The COM payload becomes a neutral `CanonicalEvent` (same model
    and mapping as com-event-relay, so target behaviour is identical).
-5. **Deliver** via the selected `TARGET` adapter (`obm` / `servicenow` / `splunk`
+5. **Deliver** via the selected `TARGET` adapter (`obm` / `servicenow` / `opsramp` / `halo` / `splunk`
    / `webhook`) — see [Delivery modes](#delivery-modes).
 6. **De-duplicate.** A local SQLite TTL store suppresses repeats (COM retries).
 
@@ -127,11 +127,13 @@ docker compose up -d --build
 | `MAX_BODY_BYTES` | no | Max request body. Default `262144` (256 KB). |
 | `DELIVERY_MODE` | no | `sync` (default) or `spool`. |
 | `SPOOL_PATH` / `SPOOL_MAX_BYTES` / `SPOOL_RETRY_SECONDS` / `SPOOL_RETRY_CAP` / `SPOOL_POLL_SECONDS` | no | Spool tuning (`spool` mode). |
-| `TARGET` | no | `obm` (default) / `servicenow` / `splunk` / `webhook`. |
+| `TARGET` | no | `obm` (default) / `servicenow` / `opsramp` / `halo` / `splunk` / `webhook`. |
 | `TARGET_TIMEOUT` | no | Per-target HTTP timeout (s). Default `15`. |
 | `DEDUP_DB_PATH` / `DEDUP_TTL_SECONDS` | no | De-dup store + window (`0` disables). |
 | `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD` | if `TARGET=obm` | OBM Event REST API + Basic auth. |
 | `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD` | if `TARGET=servicenow` | `SNOW_TABLE` optional (`em_event` default / `incident`). |
+| `OPSRAMP_API_URL` / `OPSRAMP_TENANT_ID` / `OPSRAMP_KEY` / `OPSRAMP_SECRET` | if `TARGET=opsramp` | OAuth2 client-credentials; `OPSRAMP_SERVICE_NAME` optional. |
+| `HALO_API_URL` / `HALO_CLIENT_ID` / `HALO_CLIENT_SECRET` | if `TARGET=halo` | OAuth2 client-credentials; `HALO_TENANT` / `HALO_TICKET_TYPE_ID` optional. |
 | `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN` | if `TARGET=splunk` | HEC endpoint + token. |
 | `WEBHOOK_URL` | if `TARGET=webhook` | Optional `WEBHOOK_AUTH_HEADER`/`_VALUE`. |
 

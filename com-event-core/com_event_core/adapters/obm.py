@@ -11,7 +11,7 @@ import os
 
 import httpx
 
-from com_event_core.normalize import CanonicalEvent
+from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.obm")
@@ -35,15 +35,21 @@ class ObmAdapter(TargetAdapter):
         self._timeout = int(os.environ.get("TARGET_TIMEOUT", "15"))
 
     def _to_obm(self, e: CanonicalEvent) -> dict:
+        # On a clear (recovery), send a normal-severity, closed event carrying the
+        # SAME key as the original so OBM correlates and auto-closes it.
+        is_clear = e.action == ACTION_CLEAR
         return {
             "title": e.title,
-            "severity": _SEVERITY.get(e.severity, "warning"),
+            "severity": "normal" if is_clear else _SEVERITY.get(e.severity, "warning"),
+            "lifecycle_state": "closed" if is_clear else "open",
             "related_ci": e.resource_serial,
             "node": e.resource_model,
             "mgmt_url": e.mgmt_url,
             "time_created": e.time_created,
+            "description": e.description or "",
             "custom_attrs": ";".join(f"{k}={v}" for k, v in e.tags.items()),
-            "dedup_key": e.dedup_key,
+            # Stable per-problem key so the raise and its later clear line up.
+            "dedup_key": e.correlation_key or e.dedup_key,
         }
 
     def forward(self, event: CanonicalEvent) -> None:
@@ -51,4 +57,4 @@ class ObmAdapter(TargetAdapter):
         with httpx.Client(timeout=self._timeout) as client:
             r = client.post(self._url, json=payload, auth=self._auth)
             r.raise_for_status()
-        log.info("event %s forwarded to OBM", event.event_id)
+        log.info("event %s (%s) forwarded to OBM", event.event_id, event.action)
