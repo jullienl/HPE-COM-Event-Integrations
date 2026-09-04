@@ -16,7 +16,7 @@ different trade-off:
 | Topology | Cloud relay + on-prem shim + queue | **One on-prem box** |
 | Cloud footprint | Required (Azure/AWS) | **None** |
 | Inbound exposure | None (shim is outbound-only) | You host the public endpoint |
-| Durability | Durable cloud queue | Local spool (optional) or COM retries |
+| Durability | Durable cloud queue | Local spool (optional); `sync` is best-effort |
 | Best for | Zero inbound exposure + durability | Strict no-cloud mandate, simplicity |
 
 **If your target is OpsRamp or ServiceNow incident creation, use neither** — COM
@@ -44,7 +44,8 @@ COM ──443──►  handshake ─► auth ─► normalize ─► deliver �
    and mapping as com-event-relay, so target behaviour is identical).
 5. **Deliver** via the selected `TARGET` adapter (`obm` / `servicenow` / `opsramp` / `halo` / `splunk`
    / `webhook`) — see [Delivery modes](#delivery-modes).
-6. **De-duplicate.** A local SQLite TTL store suppresses repeats (COM retries).
+6. **De-duplicate.** A local SQLite TTL store suppresses repeats (duplicate or
+   redelivered events for the same fault).
 
 ## Delivery modes
 
@@ -53,12 +54,25 @@ Because there is no queue, you choose how delivery is guaranteed with
 
 | Mode | Behaviour | Trade-off |
 |---|---|---|
-| **`sync`** (default) | Forward inline. If the target fails, return `503` so **COM retries**. | Simplest; delivery bounded by COM's retry window. |
-| **`spool`** | Persist the event to a local on-disk spool (SQLite), ack COM with `202` immediately, and drain it in a **background worker** that retries with capped exponential backoff. | Survives target outages without a cloud queue; the box's disk is the buffer. |
+| **`spool`** (default) | Persist the event to a local on-disk spool (SQLite), ack COM with `202` immediately, and drain it in a **background worker** that retries with capped exponential backoff. | Survives target outages without a cloud queue; the box's disk is the buffer. **Requires a durable `SPOOL_PATH`** (see prerequisite below). |
+| **`sync`** | Forward inline. If the target fails, return `503` — but COM is **fire-and-forget** (no retries), so the event is **lost**, and sustained `5xx` from a down target risks the webhook being **disabled** in COM (10 consecutive failures). | Best-effort only; opt in with `DELIVERY_MODE=sync` where occasional loss is acceptable. |
+
+> **Prerequisite — durable spool storage.** In `spool` mode `SPOOL_PATH` **must**
+> point at persistent storage (a mounted volume), and the bridge **refuses to
+> start** if `SPOOL_PATH` is unset. An ephemeral path (e.g. `./spool.db` inside a
+> container) would silently discard the pending backlog on restart/redeploy —
+> false durability — so this is a hard fail rather than a silent footgun.
+>
+> - **Container / compose:** mount a named volume at `/data`
+>   ([docker-compose.yml](docker-compose.yml) already mounts `bridge-data:/data`,
+>   and the image defaults `SPOOL_PATH=/data/spool.db`).
+> - **Bare metal / systemd:** set `SPOOL_PATH` to an absolute path on a
+>   persistent disk, e.g. `/var/lib/com-event-bridge/spool.db`.
 
 In `spool` mode the backlog is capped at `SPOOL_MAX_BYTES`; once exceeded, new
-events get `503` (COM holds and retries) so a prolonged outage can't fill the
-disk. The spool is crash-safe — unsent events survive a restart.
+events get `503` **backpressure** (dropped — COM does not retry) so a prolonged
+outage can't fill the disk. The spool is crash-safe — unsent events survive a
+restart.
 
 ## Endpoints
 
@@ -71,8 +85,8 @@ disk. The spool is crash-safe — unsent events survive a restart.
 | `POST` missing/invalid secret | `401` |
 | `POST` body over `MAX_BODY_BYTES` | `413` |
 | `POST` malformed JSON | `400` |
-| `POST`, `sync`, target unavailable | `503` (COM retries) |
-| `POST`, `spool`, backlog full | `503` (COM retries) |
+| `POST`, `sync`, target unavailable | `503` (event lost — COM does not retry) |
+| `POST`, `spool`, backlog full | `503` (dropped — COM does not retry) |
 | `GET /healthz` (liveness) | `200` |
 | `GET /readyz` (readiness) | `200` ready / `503` (spool worker down) |
 
@@ -87,18 +101,26 @@ operate:
   see [deploy/nginx](deploy/nginx/com-event-bridge.conf);
 - the **CA certificate lifecycle** (issuance + renewal) — the compose stack wires
   up certbot for this;
+- **durable spool storage** (a mounted volume for `SPOOL_PATH`) in the default
+  `spool` mode — the bridge won't start without it;
 - host hardening, patching, and (if you need it) HA — see [HARDENING.md](HARDENING.md).
 
 ## Quick start
 
 ### Run locally (sync mode)
 
+The default mode is `spool`, which requires a durable `SPOOL_PATH`. For a quick
+local smoke test of the handshake and auth, opt into best-effort `sync` so no
+spool volume is needed:
+
 ```bash
 cd bridge
 cp .env.example .env        # set COM_SHARED_SECRET + TARGET + target creds
+# for this local smoke test only, force best-effort inline delivery:
+#   set DELIVERY_MODE=sync in .env  (production should use spool + a volume)
 pip install -e ../../com-event-core   # shared normaliser/dedup/adapters (+ httpx)
 pip install -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port 8080
+DELIVERY_MODE=sync uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
 Smoke-test the handshake and a bad-secret rejection:
@@ -107,6 +129,39 @@ Smoke-test the handshake and a bad-secret rejection:
 curl -i localhost:8080/com/webhook -H "x-compute-ops-mgmt-verification-challenge: abc123"
 curl -i -X POST localhost:8080/com/webhook -d '{}'          # 401 (no secret)
 ```
+
+### Run the container (spool mode, with a durable volume)
+
+In the default `spool` mode the bridge needs a **persistent volume** for the
+spool DB, otherwise it refuses to start (an ephemeral path would lose the backlog
+on restart). The image already defaults `SPOOL_PATH=/data/spool.db`, so you just
+have to mount a volume at `/data`:
+
+```bash
+# Build (context is the repo root so the image includes com-event-core)
+docker build -f com-event-bridge/bridge/Dockerfile -t com-event-bridge:local .
+
+# Create a named volume once — this is what makes the spool survive restarts
+docker volume create bridge-data
+
+# Run, mounting the volume at /data (matches the image's SPOOL_PATH default)
+docker run -d --name com-event-bridge \
+  -p 8080:8080 \
+  -v bridge-data:/data \
+  --env-file com-event-bridge/bridge/.env \
+  com-event-bridge:local
+```
+
+- `-v bridge-data:/data` is the important part — it maps the persistent volume
+  onto `/data`, where `SPOOL_PATH` (and `DEDUP_DB_PATH`) live.
+- Prefer a **named volume** (`bridge-data`) as above; a host path also works
+  (e.g. `-v /srv/com-event-bridge:/data`), just make sure the directory is
+  writable by uid `10001` (the non-root user in the image).
+- To point the spool elsewhere, override both the path and the mount, e.g.
+  `-e SPOOL_PATH=/data/spool.db -v bridge-data:/data`.
+
+> This runs the bridge alone (no TLS). It still needs a TLS reverse proxy in
+> front for COM — use the full compose stack below for that.
 
 ### Run the full DMZ stack (bridge + nginx TLS + certbot)
 
@@ -118,6 +173,10 @@ cp bridge/.env.example bridge/.env    # set secrets + target
 docker compose up -d --build
 ```
 
+The compose stack already declares the `bridge-data` volume and mounts it at
+`/data` for you ([docker-compose.yml](docker-compose.yml)), so the spool is
+durable out of the box.
+
 ## Configuration (env vars)
 
 | Var | Required | Notes |
@@ -125,8 +184,9 @@ docker compose up -d --build
 | `COM_SHARED_SECRET` | yes | Secret COM presents on every event. |
 | `SHARED_SECRET_HEADER` | no | Header carrying the secret. Default `x-shim-secret`. |
 | `MAX_BODY_BYTES` | no | Max request body. Default `262144` (256 KB). |
-| `DELIVERY_MODE` | no | `sync` (default) or `spool`. |
-| `SPOOL_PATH` / `SPOOL_MAX_BYTES` / `SPOOL_RETRY_SECONDS` / `SPOOL_RETRY_CAP` / `SPOOL_POLL_SECONDS` | no | Spool tuning (`spool` mode). |
+| `DELIVERY_MODE` | no | `spool` (default, durable) or `sync` (best-effort). |
+| `SPOOL_PATH` | **yes, in `spool` mode** | Path to the spool DB on **durable** storage (mounted volume). Bridge won't start in spool mode if unset. Container default `/data/spool.db`. |
+| `SPOOL_MAX_BYTES` / `SPOOL_RETRY_SECONDS` / `SPOOL_RETRY_CAP` / `SPOOL_POLL_SECONDS` | no | Spool tuning (`spool` mode). |
 | `TARGET` | no | `obm` (default) / `servicenow` / `opsramp` / `halo` / `splunk` / `webhook`. |
 | `TARGET_TIMEOUT` | no | Per-target HTTP timeout (s). Default `15`. |
 | `DEDUP_DB_PATH` / `DEDUP_TTL_SECONDS` | no | De-dup store + window (`0` disables). |

@@ -71,14 +71,20 @@ docker compose exec nginx nginx -s reload
 
 ## 5. Delivery durability
 
-- **`DELIVERY_MODE=sync`** relies on COM's retries. If the target is down longer
-  than COM's retry window, those events are lost — acceptable only if the target's
-  downtime is always short.
-- **`DELIVERY_MODE=spool`** persists events locally and retries with backoff,
-  surviving target outages **without** a cloud queue. Put `SPOOL_PATH` on durable
-  storage (a mounted volume — the Dockerfile uses `/data`; the systemd unit uses
-  `/var/lib/com-event-bridge`) and size `SPOOL_MAX_BYTES` for your worst-case
-  outage × event rate. Back up / monitor the spool DB.
+- **`DELIVERY_MODE=spool`** is the **default** and the durable path: events are
+  persisted locally and retried with backoff, surviving target outages **without**
+  a cloud queue. `SPOOL_PATH` **must** live on durable storage (a mounted
+  volume — the Dockerfile defaults to `/data`; the systemd unit uses
+  `/var/lib/com-event-bridge`), and **the bridge refuses to start in spool mode
+  if `SPOOL_PATH` is unset** — this prevents an ephemeral path from silently
+  dropping the backlog on restart. Size `SPOOL_MAX_BYTES` for your worst-case
+  outage × event rate, and back up / monitor the spool DB.
+- **`DELIVERY_MODE=sync`** is **opt-in, best-effort**: COM webhooks are
+  fire-and-forget (one POST, no retries), so if the target is down when an event
+  arrives, that event is **lost**. A persistently down target also produces
+  sustained `5xx`, and 10 consecutive webhook failures **disable the webhook** in
+  COM (all delivery stops until manually re-enabled). Use `sync` only where
+  occasional loss is acceptable.
 - Monitor the pending backlog and alert if it grows (target trouble). `/readyz`
   returns `503` if the spool worker has died.
 

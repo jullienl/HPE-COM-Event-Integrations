@@ -8,8 +8,12 @@ and deleting it on success (retrying with capped exponential backoff on
 failure). The spool is crash-safe: on restart, unsent events are still present.
 
 This trades a small local disk footprint for "no lost events" without any cloud
-dependency. `DELIVERY_MODE=sync` (the default) does not use the spool at all —
-it forwards inline and relies on COM's own retries.
+dependency, and it is the DEFAULT delivery mode. `DELIVERY_MODE=sync` is an
+opt-in best-effort mode that does not use the spool at all — it forwards inline
+(COM webhooks are fire-and-forget, with no retries, so a delivery that fails
+inline is lost). In spool mode SPOOL_PATH MUST live on durable storage (a mounted
+volume); app.py refuses to start otherwise so an ephemeral path can't silently
+drop the backlog on restart.
 """
 
 from __future__ import annotations
@@ -27,7 +31,8 @@ log = logging.getLogger("com-event-bridge.spool")
 
 SPOOL_PATH = os.environ.get("SPOOL_PATH", "./spool.db")
 # Reject new events once the pending backlog exceeds this many bytes, so a
-# prolonged target outage can't fill the disk (handler returns 503 -> COM retries).
+# prolonged target outage can't fill the disk (handler returns 503 as backpressure;
+# COM does not retry, so an event rejected here is dropped).
 SPOOL_MAX_BYTES = int(os.environ.get("SPOOL_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
 # Base retry delay; grows exponentially per attempt up to SPOOL_RETRY_CAP.
 SPOOL_RETRY_SECONDS = int(os.environ.get("SPOOL_RETRY_SECONDS", "30"))

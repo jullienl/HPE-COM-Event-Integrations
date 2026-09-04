@@ -7,11 +7,20 @@ Folds the whole COM -> target path into ONE process:
   2. Authenticates events via a shared-secret header (only COM knows it).
   3. Normalises the COM payload into a CanonicalEvent.
   4. Delivers it to the selected TARGET adapter, either:
-       - DELIVERY_MODE=sync  : forward inline; on failure return 503 so COM
-                               retries (simplest; relies on COM's retry window).
-       - DELIVERY_MODE=spool : persist to a local on-disk spool, ack COM with
-                               202 immediately, and let a background worker drain
-                               + retry (survives target outages, no cloud queue).
+       - DELIVERY_MODE=spool (default): persist to a local on-disk spool, ack COM
+                               with 202 immediately, and let a background worker
+                               drain + retry (survives target outages, no cloud
+                               queue). This is the safe default. It REQUIRES
+                               SPOOL_PATH to point at durable storage (a mounted
+                               volume); the bridge refuses to start otherwise, so
+                               an ephemeral path can't silently lose the backlog
+                               on restart.
+       - DELIVERY_MODE=sync  : forward inline (opt-in, best-effort). COM webhooks
+                               are fire-and-forget (one POST, no retries), so a
+                               target failure returns 5xx but the event is LOST.
+                               Worse, a down target means sustained 5xx, and 10
+                               consecutive webhook failures DISABLE the webhook in
+                               COM (all delivery stops until manually re-enabled).
 
 Unlike com-event-relay, this is the PUBLIC edge itself — put a TLS-terminating
 reverse proxy (nginx/Caddy) in front and see HARDENING.md.
@@ -64,12 +73,26 @@ log = logging.getLogger("com-event-bridge")
 COM_SECRET = os.environ["COM_SHARED_SECRET"]
 SECRET_HEADER = os.environ.get("SHARED_SECRET_HEADER", "x-shim-secret").lower()
 MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", str(256 * 1024)))  # 256 KB
-DELIVERY_MODE = os.environ.get("DELIVERY_MODE", "sync").strip().lower()  # sync | spool
+DELIVERY_MODE = os.environ.get("DELIVERY_MODE", "spool").strip().lower()  # spool | sync
 
 CHALLENGE_HEADER = "x-compute-ops-mgmt-verification-challenge"
 
 if DELIVERY_MODE not in ("sync", "spool"):
     raise ValueError(f"DELIVERY_MODE must be 'sync' or 'spool', got '{DELIVERY_MODE}'.")
+
+# spool mode is the safe default, but it's only durable if SPOOL_PATH lives on
+# persistent storage. We refuse to fall back to an ephemeral default: inside a
+# container that would silently discard the pending backlog on restart/redeploy,
+# giving false durability. Fail fast at startup so the operator makes a choice.
+if DELIVERY_MODE == "spool" and not os.environ.get("SPOOL_PATH"):
+    raise ValueError(
+        "DELIVERY_MODE=spool requires SPOOL_PATH to point at durable storage "
+        "(a mounted volume) — e.g. /data/spool.db in the container (mount a volume "
+        "at /data) or /var/lib/com-event-bridge/spool.db on bare metal. Refusing "
+        "to start with an ephemeral default that would silently lose the spooled "
+        "backlog on restart. Set SPOOL_PATH, or set DELIVERY_MODE=sync for "
+        "best-effort inline delivery (events are lost if the target is down)."
+    )
 
 # Select + validate the target adapter once, at startup.
 adapter = get_adapter()
@@ -162,7 +185,11 @@ async def webhook(request: Request):
 
 
 def _forward_sync(payload: dict, event_type: str) -> Response:
-    """Inline delivery: forward now; a target failure becomes 503 so COM retries."""
+    """Inline delivery (best-effort): forward now. On failure we return 503, but
+    COM is fire-and-forget and will NOT resend — the event is lost. A persistently
+    down target also means repeated 5xx, and 10 consecutive webhook failures
+    DISABLE the webhook in COM (stopping all delivery). Use spool mode if either
+    is unacceptable."""
     event = normalize(payload)
 
     if dedup.is_duplicate(event.dedup_key):
@@ -173,7 +200,7 @@ def _forward_sync(payload: dict, event_type: str) -> Response:
     try:
         adapter.forward(event)
     except Exception:
-        log.exception("forward failed; asking COM to retry",
+        log.exception("forward failed; returning 503 (COM does not retry — event lost)",
                       extra={"event_id": event.event_id, "status": 503, "mode": "sync"})
         raise HTTPException(status_code=503, detail="target temporarily unavailable")
 
@@ -186,14 +213,17 @@ def _forward_sync(payload: dict, event_type: str) -> Response:
 def _accept_to_spool(body: bytes, event_type: str) -> Response:
     """Durable delivery: persist and ack immediately; the worker drains + retries.
 
-    If the spool is over budget (prolonged target outage), return 503 so COM
-    holds and retries rather than us dropping the event or filling the disk.
+    If the spool is over budget (prolonged target outage) we return 503 as
+    backpressure rather than fill the disk. Note COM is fire-and-forget and will
+    NOT resend, so an event rejected here is dropped — size SPOOL_MAX_BYTES for
+    your worst-case outage so this stays a last-resort safety valve.
     """
     assert spool is not None  # created in spool mode at startup
     try:
         row_id = spool.put(body, {"event_type": event_type, "source": "com-event-bridge"})
     except SpoolFull:
-        log.error("spool full; asking COM to retry", extra={"status": 503, "mode": "spool"})
+        log.error("spool full; returning 503 (backpressure — COM does not retry, event dropped)",
+                  extra={"status": 503, "mode": "spool"})
         raise HTTPException(status_code=503, detail="spool full; retry later")
 
     log.info("event spooled",
