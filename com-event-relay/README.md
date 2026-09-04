@@ -75,7 +75,9 @@ entirely.
 > **Note:** this project still ships `servicenow` and `opsramp` shim adapters
 > (ServiceNow Table API → `em_event` / `incident`; OpsRamp Alerts API via OAuth2).
 > Use them only when you specifically want the **webhook/queue-decoupled** path —
-> for example to feed ServiceNow **Event Management** or OpsRamp **alerts** with
+> for example when you **cannot open an inbound firewall port** (the native
+> integrations require COM to reach an endpoint you expose; the outbound-only shim
+> does not), to feed ServiceNow **Event Management** or OpsRamp **alerts** with
 > enriched/normalised events, to keep the internal network unexposed, or to route
 > the same COM event stream to several targets at once. For plain COM-driven
 > incident creation (ServiceNow) or native event ingestion (OpsRamp), prefer the
@@ -83,8 +85,10 @@ entirely.
 
 > **Bottom line:** use this relay when the target is **not** a natively supported
 > COM destination (OBM, Splunk, a generic webhook, ...), or when you need the
-> queue-decoupled, network-unexposed delivery it provides. For **OpsRamp** and
-> **ServiceNow** incident creation, point COM straight at the native integration.
+> queue-decoupled, network-unexposed delivery it provides — including the case
+> where you want ServiceNow/OpsRamp but **can't open an inbound firewall port**.
+> For **OpsRamp** and **ServiceNow** incident creation *when you can expose an
+> endpoint COM reaches*, point COM straight at the native integration.
 
 ## What this project does, in detail
 

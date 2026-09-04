@@ -9,6 +9,75 @@ them.
 > These are **reference/sample** implementations meant to be forked and adapted,
 > not a supported HPE product.
 
+## Why this project exists
+
+COM can **push events** (server health transitions, alerts) to any HTTPS endpoint
+via webhooks. In theory you just point COM at your monitoring or ITSM tool and
+you're done. In practice, "just send COM a webhook" runs into four recurring
+objections — and connecting COM to real operational tooling is rarely a simple
+one-liner:
+
+**1. Compatibility & integration complexity.** A target may "support webhooks",
+but not COM's *specific* contract: the **GET verification handshake**, the
+**static-header shared-secret** auth, and COM's **payload shape**. The event body
+also isn't in the target's expected format. So most integrations need custom glue
+anyway.
+
+**2. Additional components.** That glue usually means standing up **middleware** —
+one more thing to design, deploy, secure, and operate.
+
+**3. Reliability & data handling.** A raw webhook is fire-and-forget. Production
+needs **retry, queuing/buffering, retention, de-duplication, filtering, and
+correlation** — and if the endpoint just forwards, *the receiving system* has to
+provide all of it.
+
+**4. Security & supportability.** A **public endpoint**, **credential
+management**, **troubleshooting**, and unclear **ownership across several moving
+parts** are all legitimate concerns — especially for on-prem or closed networks.
+
+### What this project does about it
+
+These reference implementations are exactly that glue, built once and done right,
+so you don't rebuild it per target or per site:
+
+| Objection | How this project addresses it |
+|-----------|-------------------------------|
+| **Compatibility** | Implements COM's contract for you — the **GET handshake**, **static-header auth**, and body parsing — then **normalises** the payload into a neutral `CanonicalEvent`. A tiny per-target **adapter** maps that to the target's API (OBM, ServiceNow, OpsRamp, HaloITSM, Splunk, or any webhook). |
+| **Extra components** | **One container** does receive → transform → forward (`com-event-bridge`), or a thin relay + outbound shim when you want cloud/on-prem separation (`com-event-relay`). No bespoke middleware to invent. |
+| **Reliability** | Built-in **de-duplication** (retry never opens a second ticket), **retry**, durable **queue** (relay) or on-disk **spool** (bridge), and **raise/clear correlation** so a recovery auto-closes the item the fault opened. |
+| **No inbound firewall port** | The **cloud relay takes the public endpoint**; on-prem runs an **outbound-only shim** that *pulls* from the queue. **Nothing inbound** is ever opened into your network — even when the target is ServiceNow or OpsRamp, which their native COM integrations can't do. (The on-prem `com-event-bridge` is the option for teams that *do* host their own edge.) |
+| **Security & support** | **Shared-secret auth**, body-size limits, **least-privilege** queue credentials (send-only relay, listen-only shim), and one small, inspectable codebase you own — clear to troubleshoot, easy to fork. |
+
+> **When you *don't* need this:** if you run **OpsRamp** or **ServiceNow** *and*
+> you're willing to expose an endpoint COM can reach, both have a **native COM
+> integration** — point COM straight at it. Use these projects for everything else
+> (OBM, HaloITSM, Splunk, custom webhooks), to fan one COM stream out to several
+> targets at once, or when you **cannot open an inbound firewall port** — even for
+> ServiceNow or OpsRamp. The **outbound-only** relay + shim (and the on-prem
+> bridge) let you deliver to those targets without any inbound path into your
+> network, which the native integrations can't do.
+
+## Key capabilities
+
+- **No inbound ports on your network** — the on-prem shim is **outbound-only**; it
+  *pulls* from the queue, so COM never connects into your datacenter (works even
+  for ServiceNow / OpsRamp).
+- **Speaks COM's contract** — answers the **GET verification handshake** and
+  validates the **static-header shared secret**, so targets that can't (OBM,
+  Splunk, HaloITSM, …) still work.
+- **Durable queue decouples receive from deliver** — Azure Service Bus / AWS SQS
+  absorbs bursts and target outages; the on-prem bridge uses an on-disk **spool**
+  for the same effect.
+- **Normalise, de-duplicate, correlate** — one canonical event model; retries
+  never double-ticket; a recovery auto-closes the item the fault opened.
+- **Pluggable adapters for any target** — OBM, ServiceNow, OpsRamp, HaloITSM,
+  Splunk, or any webhook; add a new target in ~one small file.
+- **Cloud-native, container-first, scalable** — multi-arch images (amd64 + arm64)
+  to GHCR; scale the relay horizontally on ACA / App Runner.
+- **Operable by design** — health/readiness probes, structured logs, and it
+  **fails safely**: retries transient errors, quarantines bad events (no data
+  loss) via the queue's dead-letter queue (DLQ).
+
 ## Which project do I use?
 
 ```mermaid
@@ -34,7 +103,31 @@ flowchart TD
 |--------|---------|-------------|
 | **Cloud relay + on-prem shim** | [com-event-relay](com-event-relay) | You want a managed public receiver (Azure Container Apps / AWS App Runner) that enqueues events, drained by an outbound-only shim running next to your target. No inbound ports on-prem. |
 | **Single on-prem box** | [com-event-bridge](com-event-bridge) | No cloud allowed, or you just want the smallest footprint. One container receives, transforms, and forwards in a single process, with an optional local disk spool for durability. |
-| **Native integration** | — (product) | If you already run **OpsRamp** or **ServiceNow**, both have a **built-in COM integration** — no shim/relay needed. See the relay README's "native integrations" note. |
+| **Native integration** | — (product) | If you already run **OpsRamp** or **ServiceNow** *and* can expose an endpoint COM reaches, both have a **built-in COM integration** — no shim/relay needed. But if you **can't open an inbound firewall port**, use the outbound-only relay + shim above instead. See the relay README's "native integrations" note. |
+
+### Why host the relay in Azure / AWS?
+
+COM is a SaaS service that **pushes** events to a public HTTPS endpoint you
+provide, so **whatever COM talks to must be publicly reachable**: a **public DNS
+name**, a **valid CA-signed TLS certificate**, and **inbound 443** open to COM's
+egress. That's a real edge to build, secure, patch, and keep certificates valid on.
+
+Running the relay on **Azure Container Apps** or **AWS App Runner** gives you all
+of that **for free from the platform** — so you operate none of it:
+
+| You need… | Managed cloud gives you |
+|-----------|-------------------------|
+| Public DNS name | A public URL out of the box |
+| Valid CA TLS certificate | **Automatic TLS** — issuance *and* renewal |
+| Inbound 443 exposed | Public HTTPS ingress, no firewall/reverse proxy to run |
+| A patched, available host | **OS patching + autoscaling**, nothing to maintain |
+
+Your internal network stays closed: the public edge is the cloud relay, and the
+**outbound-only shim** delivers to your target with **no inbound path** into your
+datacenter. Prefer no cloud at all? The **com-event-bridge** single box gives you
+the same pipeline, but then *you* own the public edge (DNS, cert lifecycle,
+inbound 443) — it ships with an nginx + certbot stack to help. Full trade-offs are
+in the [relay README](com-event-relay/README.md#choosing-a-deployment-model).
 
 ## Projects in this repo
 
@@ -75,9 +168,10 @@ Adding a new target is a small adapter in `com-event-core` (map `CanonicalEvent`
 > paths — ServiceNow for incident creation, OpsRamp for event/alert ingestion).
 > If COM can reach them directly, point COM straight at the native integration and
 > **skip this project**. Use the bundled `servicenow` / `opsramp` adapters only for
-> the **decoupled** path this project provides: keeping the internal network
-> unexposed, feeding enriched/normalised events, or fanning the same COM stream out
-> to several targets at once. Details in the
+> the **decoupled** path this project provides: **no inbound firewall port** (the
+> outbound-only shim pulls from the queue, so COM never reaches into your network),
+> keeping the internal network unexposed, feeding enriched/normalised events, or
+> fanning the same COM stream out to several targets at once. Details in the
 > [com-event-relay README](com-event-relay/README.md#when-you-dont-need-this-native-com-integrations-opsramp-servicenow).
 >
 > **Why a `halo` adapter?** HaloITSM has no native COM path, and the pipeline's
