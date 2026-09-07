@@ -22,9 +22,16 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
 
 | Piece | Where | Image | Role |
 |-------|-------|-------|------|
-| Relay | AWS App Runner (public HTTPS) | `public.ecr.aws/jullienl/com-event-relay` | Answers COM handshake, validates the shared secret, enqueues events. |
+| Relay | AWS App Runner (public HTTPS) | your private **ECR** repo (mirrored from `ghcr.io/jullienl/com-event-relay`) | Answers COM handshake, validates the shared secret, enqueues events. |
 | Queue | Amazon SQS | — | Durable buffer between receive and deliver. |
 | Shim | Anywhere with **outbound** internet (your laptop/VM/on-prem) | `ghcr.io/jullienl/com-event-shim` | Drains the queue, forwards to GitHub. **No inbound ports.** |
+
+> **Why mirror the relay image into ECR?** CI publishes the relay to **GHCR**
+> (`ghcr.io/jullienl/com-event-relay`), but **App Runner can only pull from ECR /
+> ECR Public** — it cannot pull from GHCR. So step 5 copies the published GHCR
+> image into a private **ECR** repo in your account **once**, and App Runner pulls
+> it from there. The **shim** has no such limit: plain `docker run` pulls the
+> GHCR image directly.
 
 > **IAM instead of connection strings.** Unlike Azure's send/listen SAS keys, SQS
 > access is granted by **IAM**: the App Runner relay assumes an **instance role**
@@ -41,8 +48,8 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
   aws configure          # or: aws sso login
   aws sts get-caller-identity --query "{acct:Account, arn:Arn}" --output table
   ```
-- Permission to create **SQS queues** and **IAM roles/users** (admin or equivalent).
-- **Docker** on the machine that will run the **shim**. The relay needs no local Docker — App Runner pulls its image.
+- Permission to create **SQS queues**, **IAM roles/users**, and an **ECR repository** (admin or equivalent).
+- **Docker** (with Buildx — bundled with Docker Desktop) on the machine you run this from: it's needed to **mirror the relay image into ECR** (step 5.1) and to run the **shim**.
 - A **GitHub repository** you can create issues in (a throwaway repo is ideal).
 - Rights to create a **GitHub Personal Access Token** (see step 1).
 - Access to configure a **COM webhook** in the HPE GreenLake / Compute Ops Management console.
@@ -76,8 +83,12 @@ Run these in the `pwsh` terminal; later steps reuse them.
 $REGION = "eu-west-1"
 $QUEUE  = "com-events"
 $APP    = "com-event-relay"
-$IMAGE  = "public.ecr.aws/jullienl/com-event-relay:latest"
 $HDR    = "x-shim-secret"                                             # shared-secret header name
+
+$ACCOUNT    = aws sts get-caller-identity --query Account --output text
+$GHCR_IMAGE = "ghcr.io/jullienl/com-event-relay:latest"               # upstream, published by CI
+$ECR_REPO   = "com-event-relay"                                       # your private ECR repo (created in step 5)
+$IMAGE      = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:latest"   # App Runner pulls this
 
 # 32-byte (64 hex char) shared secret, no openssl needed on Windows:
 $SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
@@ -163,13 +174,61 @@ $ROLE_ARN = aws iam get-role --role-name com-relay-apprunner --query Role.Arn --
 
 ## 5. Deploy the relay to App Runner
 
+### 5.1 Mirror the published image into your private ECR
+
+App Runner can pull only from ECR / ECR Public (never GHCR), so copy the
+CI-published GHCR image into a private ECR repo in your account. `buildx
+imagetools create` copies the **full multi-arch manifest** directly (no local
+pull, so architecture is always correct):
+
 ```powershell
-# Source configuration: public ECR image + env vars (the relay reads these)
+# Create the ECR repo (ignore the error if it already exists)
+aws ecr create-repository --repository-name $ECR_REPO --region $REGION 2>$null | Out-Null
+
+# Log Docker in to your ECR registry
+aws ecr get-login-password --region $REGION | `
+  docker login --username AWS --password-stdin "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
+
+# Copy GHCR -> ECR (the GHCR image is public, so no GHCR login is needed)
+docker buildx imagetools create --tag $IMAGE $GHCR_IMAGE
+```
+
+### 5.2 Create the App Runner ECR access role
+
+App Runner assumes this role to **pull** from your private ECR (distinct from the
+instance role in step 4, which the running relay uses to send to SQS):
+
+```powershell
+@'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Service": "build.apprunner.amazonaws.com" },
+    "Action": "sts:AssumeRole"
+  }]
+}
+'@ | Set-Content -Encoding ascii apprunner-ecr-trust.json
+
+aws iam create-role --role-name com-relay-ecr-access `
+  --assume-role-policy-document file://apprunner-ecr-trust.json 2>$null | Out-Null
+
+aws iam attach-role-policy --role-name com-relay-ecr-access `
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+$ACCESS_ROLE_ARN = aws iam get-role --role-name com-relay-ecr-access --query Role.Arn --output text
+"ECR access role ARN : $ACCESS_ROLE_ARN"
+```
+
+### 5.3 Create the App Runner service
+
+```powershell
+# Source configuration: private ECR image + access role + env vars (the relay reads these)
 @"
 {
   "ImageRepository": {
     "ImageIdentifier": "$IMAGE",
-    "ImageRepositoryType": "ECR_PUBLIC",
+    "ImageRepositoryType": "ECR",
     "ImageConfiguration": {
       "Port": "8080",
       "RuntimeEnvironmentVariables": {
@@ -181,6 +240,7 @@ $ROLE_ARN = aws iam get-role --role-name com-relay-apprunner --query Role.Arn --
       }
     }
   },
+  "AuthenticationConfiguration": { "AccessRoleArn": "$ACCESS_ROLE_ARN" },
   "AutoDeploymentsEnabled": false
 }
 "@ | Set-Content -Encoding ascii apprunner-src.json
@@ -206,15 +266,17 @@ $FQDN = aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGI
 > you, so the single COM POST (COM never retries) is always answered fast — no
 > scale-to-zero cold-start to worry about.
 
-**Private image?** The `public.ecr.aws/...` image needs no credentials. For a
-private ECR repo, add an **access role** (`AuthenticationConfiguration.AccessRoleArn`)
-that allows `ecr:GetDownloadUrlForLayer` etc. in the source configuration.
+**Updating the relay later.** When CI publishes a new GHCR image, re-run the
+mirror (5.1) to copy `:latest` into ECR, then trigger a fresh App Runner
+deployment:
+`aws apprunner start-deployment --service-arn $SERVICE_ARN --region $REGION`.
 
 **Shortcut (bash):** the same provisioning is scripted in
 [deploy/aws/deploy-relay-aws.sh](../deploy/aws/deploy-relay-aws.sh) — run it from
-CloudShell or WSL/Git Bash with `INSTANCE_ROLE_ARN=<role> AWS_REGION=... ./deploy-relay-aws.sh`.
-It creates the queue + service but assumes you already made the instance role
-(step 4) and does **not** create a DLQ.
+WSL/Git Bash (it needs Docker for the mirror) with
+`IMAGE=<ecr-uri> ACCESS_ROLE_ARN=<role> INSTANCE_ROLE_ARN=<role> AWS_REGION=... ./deploy-relay-aws.sh`.
+It mirrors the image + creates the queue + service, but assumes you already made
+the instance role (step 4) and does **not** create a DLQ.
 
 ---
 

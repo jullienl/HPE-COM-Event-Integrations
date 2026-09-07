@@ -132,3 +132,18 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   new target adapter there (`com_event_core/adapters/` + `_ADAPTERS` table).
 - CI workflows live at repo-root `.github/workflows/`; shim/bridge builds also
   trigger on `com-event-core/**` changes.
+- **CI publishes images to GHCR only** (`ghcr.io/jullienl/com-event-{relay,shim,
+  bridge}`) — there is no ECR-Public/DockerHub publish workflow. **Azure Container
+  Apps pulls GHCR directly**, but **AWS App Runner CANNOT pull GHCR** — its
+  `ImageRepositoryType` accepts only `ECR` / `ECR_PUBLIC`. So any AWS/App Runner
+  path must **mirror the GHCR image into a private ECR first** (`docker buildx
+  imagetools create --tag <ecr-uri> <ghcr-uri>` copies the full multi-arch
+  manifest) and deploy with `ImageRepositoryType=ECR` +
+  `AuthenticationConfiguration.AccessRoleArn` (an App Runner **ECR access role**:
+  trust `build.apprunner.amazonaws.com`, policy
+  `AWSAppRunnerServicePolicyForECRAccess`). This is DISTINCT from the relay
+  **instance role** (trust `tasks.apprunner.amazonaws.com`, grants
+  `sqs:SendMessage`). Never point App Runner straight at a `ghcr.io/...` image —
+  it fails. General rule: before telling a managed container runtime to pull an
+  image, confirm that runtime supports the registry; if not, mirror to a
+  supported one.
