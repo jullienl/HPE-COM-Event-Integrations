@@ -1,6 +1,6 @@
 # Deploy the cloud relay to Azure — end-to-end runbook (GitHub Issues target)
 
-A step-by-step guide to stand up **Option A** (cloud relay + on-prem shim) on
+A step-by-step guide to stand up the **cloud relay + on-prem shim** on
 Azure and take it for a first real-world spin using the **GitHub Issues**
 adapter: a COM *server health CRITICAL* opens an issue, and the matching
 *recovery* closes it.

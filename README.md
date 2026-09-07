@@ -132,8 +132,8 @@ edge lives** and **how many moving parts** you operate.
 | **Cons** | • Requires a **managed cloud account** (Azure/AWS) + a **queue** (Service Bus/SQS) — more services, some cost.<br>• **Two components** to deploy (relay + shim) instead of one. | • **You own the public edge**: DNS, CA-signed cert lifecycle, inbound **443**, host patching (ships nginx + certbot to help).<br>• Durability is a **local on-disk spool** only — no cross-host queue, no autoscale; box is a single point of failure. |
 | **Best when** | You can use a managed cloud and want **zero inbound exposure** + elastic, resilient delivery. | You **can't/won't use cloud**, or want the **minimal** all-in-one and are willing to run the public edge yourself. |
 
-Full trade-offs and the deployment-model decision are in the
-[relay README](com-event-relay/README.md#choosing-a-deployment-model).
+How to deploy each is in the [com-event-relay](com-event-relay) and
+[com-event-bridge](com-event-bridge) READMEs.
 
 ### Why host the relay in Azure / AWS?
 
@@ -156,8 +156,7 @@ Your internal network stays closed: the public edge is the cloud relay, and the
 **outbound-only shim** delivers to your target with **no inbound path** into your
 datacenter. Prefer no cloud at all? The **com-event-bridge** single box gives you
 the same pipeline, but then *you* own the public edge (DNS, cert lifecycle,
-inbound 443) — it ships with an nginx + certbot stack to help. Full trade-offs are
-in the [relay README](com-event-relay/README.md#choosing-a-deployment-model).
+inbound 443) — it ships with an nginx + certbot stack to help.
 
 ## Projects in this repo
 

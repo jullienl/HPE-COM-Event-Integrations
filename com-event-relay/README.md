@@ -12,7 +12,7 @@ endpoint** — on **Azure or AWS**, from a single image.
 - [When you don't need this: native COM integrations](#when-you-dont-need-this-native-com-integrations-opsramp-servicenow)
 - [What this project does, in detail](#what-this-project-does-in-detail)
 - [Cloud-agnostic by design](#cloud-agnostic-by-design)
-- [Choosing a deployment model](#choosing-a-deployment-model)
+- [Deployment model](#deployment-model)
 - [Relay behavior](#relay-behavior)
 - [Security model](#security-model)
 - [Secrets management](#secrets-management)
@@ -209,96 +209,42 @@ The backend also validates its required config **at startup** (fails fast with a
 clear message if, say, `QUEUE_BACKEND=sqs` but `SQS_QUEUE_URL` is unset) rather
 than erroring lazily on the first event.
 
-## Choosing a deployment model
+## Deployment model
 
 COM is a cloud (SaaS) service that **pushes** events over HTTPS to a public
-endpoint you provide. How you receive those events — and how much infrastructure
-you operate — depends on which model you choose. This section helps you decide.
+endpoint you provide. Two facts shape how you receive them:
 
-Two facts shape every option:
+- Whatever COM talks to **must be publicly reachable** (public DNS name, valid TLS
+  certificate, inbound `443`).
+- Whatever talks to **your target system** only needs **outbound** access — it
+  never has to be exposed to the internet.
 
-- The component that COM talks to **must be publicly reachable** (public DNS name,
-  valid TLS certificate, inbound `443`).
-- The component that talks to **your target system** only needs **outbound**
-  access — it never has to be exposed to the internet.
+**This project is the cloud model.** It splits those two jobs so your internal
+network is never exposed:
 
-This project splits those two jobs into a **relay** (public, cloud-hosted) and a
-**shim** (outbound-only, runs next to your target), so your internal network is
-never exposed. Below are the models you can choose from, with pros and cons.
+- The **relay** (public, cloud-hosted on Azure Container Apps or AWS App Runner) is
+  the only internet-facing component: it authenticates COM and drops each event
+  onto a durable queue (Service Bus / SQS). The platform provides the public URL,
+  automatic TLS (issuance + renewal), OS patching, and autoscaling — you operate
+  none of it.
+- The **shim** (outbound-only, runs **on-premises** next to your target) pulls from
+  the queue and forwards. Nothing inbound is ever opened on your network, and the
+  queue buffers events so a target outage never loses them.
 
-### Option A — Cloud relay + on-prem shim (recommended)
+A small managed cloud footprint (one container + one queue) is therefore a
+**prerequisite** — that is the model this project is built for.
 
-The relay and queue run in a managed cloud service (Azure Container Apps / AWS App
-Runner + Service Bus / SQS); the shim runs **on-premises** next to your target
-(OBM, ServiceNow Event Management, a local Splunk, or any webhook target). This is
-the model this project is built for and the one most customers should choose.
-
-**Pros**
-
-- **No inbound ports on your network.** The shim connects *outbound* only; nothing
-  in your data center is exposed to the internet.
-- **Nothing to patch or secure at the edge.** The cloud platform provides the
-  public URL, automatic TLS certificate (issuance + renewal), OS patching, and
-  autoscaling.
-- **No lost events.** A durable cloud queue buffers events, so if your target is
-  down or slow, events wait safely and are delivered when it recovers.
-- **Works for on-prem targets** that COM cannot reach directly.
-
-**Cons**
-
-- Requires a **small cloud footprint** (one managed container + one queue) in
-  Azure or AWS.
-- Events transit a cloud service you operate (though the payloads are COM hardware
-  events, not your application data).
-
-### Option B — Fully on-premises (no cloud at all)
-
-If you cannot use any cloud service, everything — the public endpoint, the queue,
-and the shim — runs in your own environment (typically in a DMZ).
-
-**Pros**
-
-- **No cloud dependency whatsoever**; all components stay within your
-  infrastructure.
-- Full control over where events flow and where they are stored.
-
-**Cons**
-
-- **You operate the public edge.** You must publish and secure an internet-facing
-  HTTPS endpoint (reverse proxy such as nginx/Traefik as the TLS terminator).
-- **You own the TLS certificate lifecycle** — issuing, renewing, and rotating a
-  CA-signed certificate before it expires.
-- **You own the operations** — firewall rules for inbound `443`, host hardening,
-  OS/patch management, and high availability.
-- **You provide the queue** — a self-hosted broker (RabbitMQ, Redis Streams,
-  Kafka) instead of a managed cloud queue.
-
-> This model reintroduces the very edge-hosting and certificate burden that the
-> cloud relay removes. If your only requirement is an **on-prem target** (not
-> forbidding cloud entirely), Option A gives you the same "no inbound exposure"
-> benefit without operating a public endpoint. If you truly cannot run any cloud
-> component, also see the **single-box thin shim** companion described below, which
-> collapses everything into one simpler process.
-
-### Option C — A different cloud (GCP, OCI, ...)
-
-The same design runs on other clouds — the relay is a standard container and the
-queue is pluggable. Today the project ships ready-made deployment for **Azure** and
-**AWS**; running on **GCP** (e.g. Cloud Run + Pub/Sub), **OCI**, or Kubernetes is
-supported by the architecture but needs a small amount of additional enablement
-(a queue backend module for that cloud and a deployment script). The pros and cons
-otherwise match Option A.
-
-### At a glance
-
-| Model | Public endpoint | Certificate & patching | Event buffering | Best for |
-|---|---|---|---|---|
-| **A — Cloud relay + on-prem shim** | Managed by the cloud | Managed for you | Durable cloud queue | Most customers; on-prem or unreachable targets |
-| **B — Fully on-premises** | You host & secure it | You manage it | Self-hosted broker | Strict no-cloud mandates |
-| **C — Another cloud** | Managed by that cloud | Managed for you | That cloud's queue | Standardizing on GCP/OCI/etc. |
+> **No cloud allowed?** Use the sibling **[com-event-bridge](../com-event-bridge)**
+> instead — a single on-prem box that runs the same pipeline with no cloud and no
+> queue (you host the public TLS edge yourself; it ships an nginx + certbot stack
+> to help).
+>
+> **Relay or bridge — which should I pick?** The full side-by-side comparison, pros
+> and cons, and decision flowchart live in the
+> [root README](../README.md#which-project-do-i-use).
 
 If your target is **OpsRamp** or **ServiceNow incident creation**, you don't need
-any of these models — use the native COM integration described
+this project at all — use the native COM integration described
 [above](#when-you-dont-need-this-native-com-integrations-opsramp-servicenow).
 
 ## Relay behavior
@@ -461,6 +407,10 @@ export INSTANCE_ROLE_ARN=arn:aws:iam::123456789012:role/com-relay-sqs-send
 ./deploy/aws/deploy-relay-aws.sh
 # prints the webhook URL + generated shared secret
 ```
+
+> **Step-by-step runbook:** for a full walk-through — provisioning, wiring the COM
+> webhook, running the shim, and an end-to-end GitHub Issues test — see
+> [docs/Deploy-Cloud-Relay-to-AWS.md](docs/Deploy-Cloud-Relay-to-AWS.md).
 
 ## Local development with Docker Compose
 
@@ -642,29 +592,13 @@ COM ──► [ thin on-prem shim: handshake + auth → transform → forward ] 
 
 It reuses the same COM verification handshake, shared-secret authentication, event
 normalisation, and target adapters (OBM, ServiceNow, Splunk, generic webhook) as
-this project, so behaviour toward COM and your target is identical.
+this project, so behaviour toward COM and your target is identical. The difference
+is that the bridge hosts the public TLS edge itself (no cloud, no queue) instead of
+the managed relay + queue.
 
-**Pros**
-
-- **Simplest topology** — one container, no queue, no cloud account.
-- **Everything stays on-premises**, fully under your control.
-
-**Cons**
-
-- **You host and secure a public endpoint** (reverse proxy as TLS terminator).
-- **You own the certificate lifecycle** (issuing, renewing, rotating a CA-signed
-  certificate) and the usual host operations (firewall, hardening, patching, HA).
-- **No durable buffering.** Without a queue, and since **COM does not retry**, an
-  in-process delivery failure drops the event — a prolonged target outage risks
-  lost events unless you add a local on-disk spool (see com-event-bridge).
-
-**Choosing between the models:**
-
-| Your situation | Recommended option |
-|---|---|
-| Target isn't natively supported by COM, and you want zero inbound exposure + durable delivery | **This project** — cloud relay + on-prem shim (Option A) |
-| You cannot use any cloud, and prefer the simplest single-box setup over durability | **Single-box thin shim** (companion project) |
-| Your target is OpsRamp or ServiceNow incident creation | Neither — use the native COM integration |
+For the full relay-vs-bridge comparison — pros, cons, and when to pick each — see
+the [root README](../README.md#which-project-do-i-use). Deployment details live in
+the **[com-event-bridge](../com-event-bridge)** project.
 
 ## Roadmap
 
