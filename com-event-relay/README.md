@@ -15,6 +15,7 @@ endpoint** — on **Azure or AWS**, from a single image.
 - [Choosing a deployment model](#choosing-a-deployment-model)
 - [Relay behavior](#relay-behavior)
 - [Security model](#security-model)
+- [Secrets management](#secrets-management)
 - [Quick start](#quick-start)
 - [Local development with Docker Compose](#local-development-with-docker-compose)
 - [Prebuilt images](#prebuilt-images)
@@ -22,7 +23,6 @@ endpoint** — on **Azure or AWS**, from a single image.
 - [The shim (target adapters)](#the-shim-target-adapters)
 - [Project layout](#project-layout)
 - [Companion: a single-box on-prem thin shim](#companion-a-single-box-on-prem-thin-shim)
-- [Roadmap](#roadmap)
 
 ## Why this exists
 
@@ -136,9 +136,11 @@ A request goes through these stages:
    generated `relay_event_id` and attaches metadata (event type, receive time,
    source) as **queue message properties** (Service Bus application properties /
    SQS message attributes). The shim can then filter or route without re-parsing
-   the body. The id is also returned to COM in the `x-relay-event-id` response
-   header and written to the logs, giving you **end-to-end traceability**
-   (COM → relay → queue → shim → target).
+   the body. The `relay_event_id` is logged at the relay and surfaced in the
+   `x-relay-event-id` response header — handy for manual testing (curl/Postman),
+   though COM itself only reads the status code. Downstream, delivery is
+   correlated by the **COM event id** (`event_id`), which the shim and every
+   adapter log — giving you **traceability from COM through to the target**.
 
 5. **Reliable hand-off.** The raw body is published to the queue. COM webhooks are
    **fire-and-forget** (one POST, no retries), so the relay's job is to capture
@@ -349,6 +351,79 @@ infrastructure:
   outbound shim (where per-event state is natural), keeping the relay thin and
   horizontally scalable.
 
+## Secrets management
+
+Neither the relay nor the shim requires secrets to sit in a plaintext `.env`.
+Every sensitive value — `COM_SHARED_SECRET` and `SERVICE_BUS_CONNECTION` (relay),
+plus the shim's target passwords / client secrets / tokens (`OBM_PASSWORD`,
+`SNOW_PASSWORD`, `OPSRAMP_KEY`/`OPSRAMP_SECRET`, `HALO_CLIENT_ID`/`HALO_CLIENT_SECRET`,
+`SPLUNK_HEC_TOKEN`, `GITHUB_TOKEN`, `SLACK_WEBHOOK_URL`, `TEAMS_WEBHOOK_URL`,
+`JIRA_API_TOKEN`, `PAGERDUTY_ROUTING_KEY`, `SENTINEL_SHARED_KEY`, `DATADOG_API_KEY`,
+`ELASTIC_API_KEY`/`ELASTIC_PASSWORD`, `BMC_HELIX_PASSWORD`, `DYNATRACE_API_TOKEN`,
+`GRAFANA_API_TOKEN`, `WEBHOOK_AUTH_VALUE`) — can be read from a
+**file** instead.
+
+**How it works.** For any secret `<NAME>`, resolution order is:
+
+1. `<NAME>_FILE` — read the secret from that file path (trailing newline stripped);
+2. `<NAME>` — otherwise the plain environment variable (handy for local dev);
+3. otherwise startup **fails fast** with a clear "missing secret" error.
+
+Point `<NAME>_FILE` at a path your platform projects a vault secret onto, and the
+value never enters the container's environment (so it can't leak via
+`docker inspect` / `/proc/<pid>/environ`).
+
+### Azure Key Vault (Container Apps / AKS)
+
+*For relays hosted on Azure. Skip this unless you deploy to Azure — locally, just
+use the plain `COM_SHARED_SECRET=...` env var in `.env`.*
+
+- **AKS + Secrets Store CSI driver:** install the driver + the Azure Key Vault
+  provider, grant the workload identity `get` on the secrets, and mount them.
+  The block below is a fragment of a **Kubernetes** Deployment (not a file you run
+  on its own) — add these lines to your app's container spec so each vault secret
+  appears as a file and the app is told to read it:
+
+  ```yaml
+  # SecretProviderClass mounts each vault secret as a file under the volume.
+  volumeMounts:
+    - name: secrets-store
+      mountPath: /mnt/secrets-store
+      readOnly: true
+  env:
+    - name: COM_SHARED_SECRET_FILE
+      value: /mnt/secrets-store/com-shared-secret
+    - name: SERVICE_BUS_CONNECTION_FILE
+      value: /mnt/secrets-store/sb-connection
+  ```
+
+- **Container Apps:** bind a Key Vault reference to a container-app secret, then
+  either map it to `COM_SHARED_SECRET` directly, or mount the secret as a file
+  (Container Apps secret volume) and set `COM_SHARED_SECRET_FILE` to the mount
+  path.
+
+### AWS Secrets Manager (App Runner / EKS)
+
+*The AWS equivalent of the above. Skip unless you deploy the relay on AWS.*
+
+- **EKS + Secrets Store CSI driver** with the AWS provider (ASCP) mounts each
+  secret as a file — set `..._FILE` to the mount path exactly as above.
+- **App Runner / ECS:** reference the secret in the task definition; to keep it
+  out of the environment, mount it (EFS/secret volume) and use `..._FILE`, or map
+  it to the plain env var if a file mount isn't available.
+
+### HashiCorp Vault
+
+*For teams already running HashiCorp Vault (cloud-agnostic).*
+
+Use the Vault Agent Injector (Kubernetes) or a sidecar Vault Agent to render each
+secret to a shared tmpfs file, then set `..._FILE` to that path. Agent handles
+lease renewal; the app reads the file at startup.
+
+> Prefer **least-privilege queue credentials**: a **Send**-scoped
+> `SERVICE_BUS_CONNECTION` for the relay, a **Listen**-scoped one for the shim —
+> stored as separate vault secrets.
+
 ## Quick start
 
 ### Run locally
@@ -374,6 +449,10 @@ docker run -p 8080:8080 --env-file .env com-event-relay:latest
 ./deploy/azure/deploy-relay-azure.sh
 # prints the webhook URL + generated shared secret
 ```
+
+> **Step-by-step runbook:** for a full walk-through — provisioning, wiring the COM
+> webhook, running the shim, and an end-to-end GitHub Issues test — see
+> [docs/Deploy-Cloud-Relay-to-Azure.md](docs/Deploy-Cloud-Relay-to-Azure.md).
 
 ### Deploy to AWS (App Runner)
 
@@ -446,15 +525,21 @@ the queue — no inbound ports.
 One image serves **every target and both clouds**; you pick behaviour with env
 vars:
 
-- `TARGET` selects the adapter: `obm` | `servicenow` | `opsramp` | `halo` | `splunk` | `webhook`
+- `TARGETS` selects the adapter(s): one name, or comma-separated for fan-out
+  (e.g. `halo,opsramp`, one COM event delivered to each) — `obm` | `servicenow` |
+  `opsramp` | `halo` | `splunk` | `github` | `slack` | `teams` | `jira` |
+  `pagerduty` | `sentinel` | `datadog` | `elastic` | `bmc_helix` | `dynatrace` |
+  `grafana` | `webhook`
 - `QUEUE_BACKEND` selects the queue: `servicebus` | `sqs` (must match the relay)
 
 For each message the shim: parses + **normalises** the COM event into a neutral
-`CanonicalEvent`, **de-duplicates** it (local SQLite TTL store), **forwards** it
-via the selected adapter, then **acknowledges** the message (complete on success;
-abandon for retry on transient failure; dead-letter on malformed input). Adding a
-new target is a small adapter that maps `CanonicalEvent` → the target's API — the
-consume/dedup/retry core is shared.
+`CanonicalEvent`, **de-duplicates** it (local SQLite TTL store, **per target**),
+**forwards** it via each selected adapter, then **acknowledges** the message
+(complete on success; abandon for retry on transient failure; dead-letter on
+malformed input). With multiple targets, a partial failure abandons the message
+so redelivery re-attempts **only** the failed target(s) — no duplicate tickets.
+Adding a new target is a small adapter that maps `CanonicalEvent` → the target's
+API — the consume/dedup/retry core is shared.
 
 > The normaliser, de-dup store, and target adapters live in the shared
 > **[com-event-core](../com-event-core)** package (also used by
@@ -466,7 +551,7 @@ consume/dedup/retry core is shared.
 
 ```bash
 cd shim
-cp .env.example .env        # set TARGET + queue + target credentials
+cp .env.example .env        # set TARGETS + queue + target credentials
 pip install -e ../../com-event-core   # shared normaliser/dedup/adapters (+ httpx)
 pip install -r requirements.txt
 python worker.py
@@ -482,7 +567,7 @@ docker compose --profile shim up --build
 
 | Var                      | Required            | Notes                                             |
 |--------------------------|---------------------|---------------------------------------------------|
-| `TARGET`                 | no                  | `obm` (default) / `servicenow` / `opsramp` / `halo` / `splunk` / `webhook`. |
+| `TARGETS`                | no                  | Target(s): one name or comma-separated for fan-out, e.g. `halo,opsramp`. Default `webhook`. Each of `obm` / `servicenow` / `opsramp` / `halo` / `splunk` / `github` / `slack` / `teams` / `jira` / `pagerduty` / `sentinel` / `datadog` / `elastic` / `bmc_helix` / `dynatrace` / `grafana` / `webhook`. |
 | `QUEUE_BACKEND`          | no                  | `servicebus` (default) or `sqs` — must match relay.|
 | `SERVICE_BUS_CONNECTION` | if azure            | **Listen**-scoped connection string.              |
 | `QUEUE_NAME`             | if azure            | Queue to drain, e.g. `com-events`.                |
@@ -490,12 +575,24 @@ docker compose --profile shim up --build
 | `AWS_REGION`             | if aws              | Region of the queue.                              |
 | `DEDUP_TTL_SECONDS`      | no                  | Dedup window. Default `3600`; `0` disables.       |
 | `TARGET_TIMEOUT`         | no                  | Per-target HTTP timeout (s). Default `15`.        |
-| `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD`     | if `TARGET=obm`        | OBM Event REST API + Basic auth.        |
-| `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD`       | if `TARGET=servicenow` | `SNOW_TABLE` optional (`em_event` default / `incident`). |
-| `OPSRAMP_API_URL` / `OPSRAMP_TENANT_ID` / `OPSRAMP_KEY` / `OPSRAMP_SECRET` | if `TARGET=opsramp` | OAuth2 client-credentials; `OPSRAMP_SERVICE_NAME` optional. |
-| `HALO_API_URL` / `HALO_CLIENT_ID` / `HALO_CLIENT_SECRET`  | if `TARGET=halo`       | OAuth2 client-credentials; `HALO_TENANT` / `HALO_TICKET_TYPE_ID` optional. |
-| `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN`                 | if `TARGET=splunk`     | HEC endpoint + token.                   |
-| `WEBHOOK_URL`                                         | if `TARGET=webhook`    | Optional `WEBHOOK_AUTH_HEADER`/`_VALUE`.|
+| `SERVER_MONITORS`        | no                  | Server conditions to watch, comma-separated: `health` (default) / `power` / `connection` / `subscription`. Each opens/closes its own item. |
+| `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD`     | if `obm` in `TARGETS`        | OBM Event REST API + Basic auth.        |
+| `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD`       | if `servicenow` in `TARGETS` | `SNOW_TABLE` optional (`em_event` default / `incident`). |
+| `OPSRAMP_API_URL` / `OPSRAMP_TENANT_ID` / `OPSRAMP_KEY` / `OPSRAMP_SECRET` | if `opsramp` in `TARGETS` | OAuth2 client-credentials; `OPSRAMP_SERVICE_NAME` optional. |
+| `HALO_API_URL` / `HALO_CLIENT_ID` / `HALO_CLIENT_SECRET`  | if `halo` in `TARGETS`       | OAuth2 client-credentials; `HALO_TENANT` / `HALO_TICKET_TYPE_ID` optional. |
+| `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN`                 | if `splunk` in `TARGETS`     | HEC endpoint + token.                   |
+| `GITHUB_REPO` / `GITHUB_TOKEN`                        | if `github` in `TARGETS`     | `owner/repo` + PAT (`issues:write`); `GITHUB_API_URL` (GHE) / `GITHUB_LABELS` optional. |
+| `SLACK_WEBHOOK_URL`                                   | if `slack` in `TARGETS`      | Incoming Webhook URL; `SLACK_USERNAME` optional. |
+| `TEAMS_WEBHOOK_URL`                                   | if `teams` in `TARGETS`      | Teams Workflows / Power Automate webhook URL. |
+| `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` / `JIRA_PROJECT_KEY` | if `jira` in `TARGETS` | Jira Cloud site + Basic auth; `JIRA_ISSUE_TYPE` / `JIRA_CLOSE_TRANSITION` / `JIRA_LABELS` optional. |
+| `PAGERDUTY_ROUTING_KEY`                               | if `pagerduty` in `TARGETS`  | Events API v2 integration key; `PAGERDUTY_API_URL` (EU) optional. |
+| `SENTINEL_WORKSPACE_ID` / `SENTINEL_SHARED_KEY`       | if `sentinel` in `TARGETS`   | Log Analytics workspace + key; `SENTINEL_LOG_TYPE` optional. |
+| `DATADOG_API_KEY`                                     | if `datadog` in `TARGETS`    | API key; `DATADOG_SITE` / `DATADOG_TAGS` optional. |
+| `ELASTIC_URL` / `ELASTIC_API_KEY`                     | if `elastic` in `TARGETS`    | Cluster URL + API key (or `ELASTIC_USER`/`ELASTIC_PASSWORD`); `ELASTIC_INDEX` optional. |
+| `BMC_HELIX_URL` / `BMC_HELIX_USER` / `BMC_HELIX_PASSWORD` | if `bmc_helix` in `TARGETS` | AR System REST base + JWT auth; `BMC_HELIX_SERVICE_TYPE` / `BMC_HELIX_ASSIGNED_GROUP` / `BMC_HELIX_STATUS_RESOLVED` optional. |
+| `DYNATRACE_URL` / `DYNATRACE_API_TOKEN`               | if `dynatrace` in `TARGETS`  | Environment API base + token (`events.ingest`); `DYNATRACE_ENTITY_SELECTOR` / `DYNATRACE_PROPERTIES` optional. |
+| `GRAFANA_LOKI_URL` / `GRAFANA_LOKI_USER` / `GRAFANA_API_TOKEN` | if `grafana` in `TARGETS` | Grafana Cloud Logs (Loki) URL + user id + token (`logs:write`); `GRAFANA_LABELS` optional. |
+| `WEBHOOK_URL`                                         | if `webhook` in `TARGETS`    | Optional `WEBHOOK_AUTH_HEADER`/`_VALUE`.|
 
 > The relay uses a **Send**-scoped queue credential; the shim uses a
 > **Listen**-scoped one — least privilege on both ends.
@@ -571,8 +668,5 @@ this project, so behaviour toward COM and your target is identical.
 
 ## Roadmap
 
-- More target adapters (Datadog, PagerDuty, Elastic, Microsoft Sentinel, ...) —
-  each is a small `CanonicalEvent` -> target mapping.
-- Deploy scripts for the shim (Azure Container Instances / AWS ECS) and a
-  systemd unit for bare on-prem hosts.
-- Bicep / CloudFormation templates + "Deploy to Azure" / one-click AWS.
+The roadmap is maintained once for the whole repo in the
+[root README](../README.md#roadmap).

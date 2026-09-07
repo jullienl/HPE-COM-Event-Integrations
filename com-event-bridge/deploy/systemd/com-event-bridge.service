@@ -37,5 +37,16 @@ ReadWritePaths=/var/lib/com-event-bridge
 Environment=SPOOL_PATH=/var/lib/com-event-bridge/spool.db
 Environment=DEDUP_DB_PATH=/var/lib/com-event-bridge/dedup.db
 
+# --- Secrets as files (recommended: keep them out of bridge.env) ---
+# systemd copies each credential into a private, per-service, 0400 tmpfs dir
+# exposed as $CREDENTIALS_DIRECTORY (%d below). The app reads the *_FILE path.
+# Create the source files as root:0400, then uncomment and drop the matching
+# secret lines from /etc/com-event-bridge/bridge.env:
+#   LoadCredential=com_shared_secret:/etc/com-event-bridge/com_shared_secret
+#   LoadCredential=obm_password:/etc/com-event-bridge/obm_password
+#   Environment=COM_SHARED_SECRET_FILE=%d/com_shared_secret
+#   Environment=OBM_PASSWORD_FILE=%d/obm_password
+# For encryption-at-rest (TPM / host key) use LoadCredentialEncrypted= instead.
+
 [Install]
 WantedBy=multi-user.target

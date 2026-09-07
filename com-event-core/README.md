@@ -10,6 +10,16 @@ integrations — the single source of truth used by both:
 
 > AI-generated reference implementation. Review and harden before production use.
 
+## Contents
+
+- [Why this package exists](#why-this-package-exists)
+- [What's in it](#whats-in-it)
+- [Usage](#usage)
+- [Example: one COM event across every adapter](#example-one-com-event-across-every-adapter)
+- [Install](#install)
+- [Adding a new target](#adding-a-new-target)
+- [Versioning](#versioning)
+
 ## Why this package exists
 
 The relay's shim and the bridge both need to turn a raw COM webhook payload into
@@ -24,23 +34,34 @@ consumers depend on it.
 |---|---|
 | `com_event_core.normalize` | `CanonicalEvent` dataclass + `normalize(payload)` — COM → neutral event. |
 | `com_event_core.dedup` | `DedupStore` — thread-safe SQLite TTL de-duplication. |
-| `com_event_core.adapters` | `get_adapter()` + `TargetAdapter` and the built-in targets: `obm`, `servicenow`, `opsramp`, `halo`, `splunk`, `webhook`. |
+| `com_event_core.adapters` | `get_adapters()` + `TargetAdapter` and the built-in targets: `obm`, `servicenow`, `opsramp`, `halo`, `splunk`, `github`, `slack`, `teams`, `jira`, `pagerduty`, `sentinel`, `datadog`, `elastic`, `bmc_helix`, `dynatrace`, `grafana`, `webhook`. |
+| `com_event_core.deliver` | `deliver(event, adapters, dedup)` — fan out one event to one or many adapters, with per-adapter de-dup and partial-failure retry. |
+| `com_event_core.secrets` | `get_secret(name)` — resolve a sensitive value from `<name>_FILE` (a vault/CSI/Docker/systemd-projected file) or the environment, so credentials can stay out of `.env`. |
 
-Selection is by env var: `TARGET` picks the adapter; each adapter reads its own
-target credentials from the environment (see each consumer's `.env.example`).
+Selection is by the `TARGETS` env var — one name, or a comma-separated list for
+fan-out; each adapter reads its own target credentials from the environment (see
+each consumer's `.env.example`). Every sensitive value can alternatively be read
+from a file via `get_secret()` — see each consumer's **Secrets management** section.
 
 ## Usage
 
 ```python
-from com_event_core import normalize, DedupStore, get_adapter
+from com_event_core import normalize, DedupStore, deliver, get_adapters
 
-adapter = get_adapter()            # selected by TARGET; validates its config
+adapters = get_adapters()          # one or many, from TARGETS
 dedup = DedupStore()               # SQLite TTL store
 
 event = normalize(com_payload)     # dict -> CanonicalEvent
-if not dedup.is_duplicate(event.dedup_key):
-    adapter.forward(event)         # raises on failure so the caller can retry
+deliver(event, adapters, dedup)    # fan out; raises PartialDeliveryError so the
+                                   # caller retries only the failed target(s)
 ```
+
+> **Why `deliver()` and not `adapter.forward()` directly?** `deliver()` fans the
+> event out to every selected adapter, de-duplicates **per adapter**, and marks a
+> target done **only after** its `forward()` succeeds. If some targets fail it
+> raises `PartialDeliveryError`, so the caller (spool worker / queue consumer)
+> retries the event and only the failed targets are re-attempted — no duplicate
+> tickets, no lost events.
 
 ## Example: one COM event across every adapter
 
@@ -96,7 +117,7 @@ CanonicalEvent(
     dedup_key="82b8f550…",          # sha1(correlation_key | action | severity)
     source_type="server",
     action="raise",
-    correlation_key="server:CZ2311004G",
+    correlation_key="server:CZ2311004G:health",
     resource_name="ESX-node-01",
     part_number="P28948-B21",
     description="Server: ESX-node-01\nHealth summary: CRITICAL\nComponents not OK: powerSupplies=CRITICAL",
@@ -120,7 +141,7 @@ CanonicalEvent(
   "time_created": "2025-01-01T10:00:00Z",
   "description": "Server: ESX-node-01\nHealth summary: CRITICAL\nComponents not OK: powerSupplies=CRITICAL",
   "custom_attrs": "",
-  "dedup_key": "server:CZ2311004G"
+  "dedup_key": "server:CZ2311004G:health"
 }
 ```
 
@@ -134,7 +155,7 @@ CanonicalEvent(
   "node": "CZ2311004G",
   "severity": "1",
   "description": "Server: ESX-node-01\nHealth summary: CRITICAL\nComponents not OK: powerSupplies=CRITICAL",
-  "message_key": "server:CZ2311004G",
+  "message_key": "server:CZ2311004G:health",
   "additional_info": ""
 }
 ```
@@ -146,7 +167,7 @@ CanonicalEvent(
   "short_description": "Server ESX-node-01 health CRITICAL",
   "description": "Server: ESX-node-01\nHealth summary: CRITICAL\nComponents not OK: powerSupplies=CRITICAL",
   "cmdb_ci": "CZ2311004G",
-  "correlation_id": "server:CZ2311004G"
+  "correlation_id": "server:CZ2311004G:health"
 }
 ```
 
@@ -157,7 +178,7 @@ CanonicalEvent(
   "serviceName": "HPE COM",
   "device": { "hostName": "CZ2311004G", "resourceName": "CZ2311004G" },
   "currentState": "Critical",
-  "alertKey": "server:CZ2311004G",
+  "alertKey": "server:CZ2311004G:health",
   "component": "ProLiant DL360 Gen11",
   "subject": "Server ESX-node-01 health CRITICAL",
   "description": "Server: ESX-node-01\nHealth summary: CRITICAL\nComponents not OK: powerSupplies=CRITICAL",
@@ -176,7 +197,7 @@ CanonicalEvent(
     "tickettype_id": 1,
     "impact": 1,
     "urgency": 1,
-    "thirdpartyref": "server:CZ2311004G"
+    "thirdpartyref": "server:CZ2311004G:health"
   }
 ]
 ```
@@ -199,7 +220,7 @@ CanonicalEvent(
     "time_created": "2025-01-01T10:00:00Z",
     "tags": {},
     "dedup_key": "82b8f550…",
-    "correlation_key": "server:CZ2311004G",
+    "correlation_key": "server:CZ2311004G:health",
     "description": "Server: ESX-node-01\nHealth summary: CRITICAL\nComponents not OK: powerSupplies=CRITICAL",
     "resolution": null
   }
@@ -214,8 +235,38 @@ i.e. every field shown in step 2 plus the original COM payload under `raw`).
 opened: `obm` sends `severity:"normal"` + `lifecycle_state:"closed"`;
 `servicenow` em_event sends `severity:"5"` (Clear); `opsramp` sends
 `currentState:"Ok"`; `halo`/`servicenow`-incident look up the open item by
-`thirdpartyref`/`correlation_id` and close it; `splunk`/`webhook` deliver the
-clear as its own event.
+`thirdpartyref`/`correlation_id` and close it; `github` finds the open issue by
+its `com:<key>` label and closes it; `jira` finds the open issue by its
+`com-<key>` label and runs a close transition; `bmc_helix` finds the open incident
+by its `[COM:<key>]` marker and sets the resolved status; `pagerduty` sends
+`resolve` on the same `dedup_key`; `datadog` posts a `success` event on the same
+`aggregation_key`; `dynatrace` posts a `CUSTOM_INFO` recovery on the same
+`com.correlation_key`;
+`splunk`/`slack`/`teams`/`sentinel`/`elastic`/`grafana`/`webhook` deliver the clear
+as its own event/record/message/log line.
+
+### Server conditions (multi-attribute monitoring)
+
+A COM `.../server` webhook is a **full-state snapshot**, not a "field X changed"
+delta. `normalize()` therefore returns a **list** of `CanonicalEvent`s: it
+evaluates each *condition* enabled by the `SERVER_MONITORS` env var and emits one
+event per condition, each with its own `correlation_key`
+(`server:<serial>:<condition>`) so one condition's recovery never closes
+another's item.
+
+| `SERVER_MONITORS` | Problem (raise) when | Recovery (clear) when | Severity |
+|---|---|---|---|
+| `health` *(default)* | `hardware.health.summary` ≠ `OK` | back to `OK` | mapped from health |
+| `power` | `hardware.powerState` = `OFF` | `ON` | warning |
+| `connection` | `state.connected` = `false` | `true` | major |
+| `subscription` | `state.subscriptionState` ≠ `SUBSCRIBED` or `subscriptionExpiresAt` in the past | subscribed & not expired | minor |
+
+Default is `health`. Enable several comma-separated to fan
+out — e.g. `SERVER_MONITORS=health,power,connection` opens/closes an independent
+item per condition. Because snapshots are stateless, a healthy condition emits a
+`clear` on every delivery; dedup suppresses the repeats and the adapter close is a
+no-op when nothing is open. `alert` and generic payloads still yield a single
+event. Consumers deliver the batch via `deliver_events()`.
 
 ## Install
 
@@ -242,10 +293,110 @@ pip install -e ./com-event-core
 
 ## Adding a new target
 
-Add a module under `com_event_core/adapters/` implementing `TargetAdapter`
-(map `CanonicalEvent` → the target's API in `forward()`), then register it in the
-`_ADAPTERS` table in `com_event_core/adapters/__init__.py`. Both the relay shim
-and the bridge pick it up automatically via `TARGET=<name>`.
+An adapter is the **only** target-specific code in the pipeline — everything else
+(handshake, auth, normalise, dedup, queue/spool, retry, logging) is shared and
+already done. Adding a target is usually one small file plus a one-line
+registration.
+
+### Step by step
+
+**1. Create the adapter module** — `com_event_core/adapters/<name>.py`. Subclass
+`TargetAdapter`, read config from env vars in `__init__`, and map the
+`CanonicalEvent` to the target's API in `forward()`:
+
+```python
+"""<Name> adapter — maps a CanonicalEvent to <target>'s API."""
+from __future__ import annotations
+
+import logging
+import os
+
+import httpx
+
+from com_event_core.normalize import CanonicalEvent, ACTION_CLEAR
+from .base import TargetAdapter
+
+log = logging.getLogger("com_event_core.adapter.mytool")
+
+
+class MyToolAdapter(TargetAdapter):
+    name = "mytool"                       # the TARGET value that selects this adapter
+
+    def __init__(self) -> None:
+        # Read + validate config once, at startup. Use os.environ[...] for
+        # REQUIRED vars (fail fast) and .get(...) for optional ones.
+        self._url = os.environ["MYTOOL_URL"]
+        self._token = os.environ["MYTOOL_TOKEN"]
+        self._timeout = int(os.environ.get("TARGET_TIMEOUT", "15"))
+
+    def forward(self, event: CanonicalEvent) -> None:
+        # Map the canonical fields to the target's payload.
+        payload = {
+            "summary": event.title,
+            "severity": event.severity,          # canonical scale: normal/warning/minor/major/critical
+            "node": event.resource_serial,
+            "dedupKey": event.correlation_key,   # so a later clear can resolve it
+            "state": "resolved" if event.action == ACTION_CLEAR else "active",
+            "detail": event.description,
+        }
+        with httpx.Client(timeout=self._timeout) as client:
+            r = client.post(self._url, json=payload,
+                            headers={"Authorization": f"Bearer {self._token}"})
+            r.raise_for_status()             # MUST raise on failure — caller retries
+        log.info("event %s forwarded to mytool", event.event_id)
+```
+
+**2. Register it** in the `_ADAPTERS` table in
+`com_event_core/adapters/__init__.py` — `TARGETS` name → `(module, class)`:
+
+```python
+_ADAPTERS = {
+    # ...existing entries...
+    "mytool": ("com_event_core.adapters.mytool", "MyToolAdapter"),
+}
+```
+
+That's all the wiring — both the relay shim and the bridge instantiate it
+automatically via `TARGETS=mytool` (imports are lazy, so only the selected
+target's dependencies/config are required).
+
+**3. Handle raise vs clear.** Every event has `event.action` (`"raise"` /
+`"clear"`, constants `ACTION_RAISE` / `ACTION_CLEAR`) and a stable
+`event.correlation_key`. To auto-close on recovery, use the `correlation_key` as
+the target's dedup/alert key and, on `clear`, resolve/close instead of opening a
+new item. If the target has no close concept (e.g. a log sink), just deliver the
+clear as its own event.
+
+**4. Contract to respect** (from [`TargetAdapter`](com_event_core/adapters/base.py)):
+- Set a unique `name`.
+- `forward(event)` **must raise on failure** so the shared retry (queue `abandon`
+  / bridge spool) kicks in — never swallow errors (that's silent data loss).
+- Keep it idempotent-friendly: the same event may be redelivered; using
+  `correlation_key` as the target key makes repeats update rather than duplicate.
+- Optionally override `health()` for a readiness check.
+
+**5. Test locally** with the simplest consumer — the bridge in `sync` mode:
+
+```bash
+cd com-event-bridge/bridge
+pip install -e ../../com-event-core
+TARGETS=mytool MYTOOL_URL=... MYTOOL_TOKEN=... DELIVERY_MODE=sync \
+  COM_SHARED_SECRET=dev uvicorn app:app --port 8080
+# then POST a sample COM payload (see com-event-core "Example" section / examples/)
+```
+
+**6. Document it** — add a row to the **Targets supported** table in the
+[root README](../README.md#targets-supported) and list the target's env vars.
+
+> **Canonical fields available** on `event` (see
+> [`CanonicalEvent`](com_event_core/normalize.py)): `title`, `severity`,
+> `resource_serial`, `resource_model`, `resource_name`, `part_number`,
+> `description`, `resolution`, `category`, `mgmt_url`, `time_created`, `tags`,
+> `action`, `correlation_key`, `source_type`, `event_id`, and `raw` (the original
+> COM payload if you need a field the canonical model doesn't expose).
+
+The simplest working example to copy is
+[`webhook.py`](com_event_core/adapters/webhook.py) (~40 lines).
 
 ## Versioning
 

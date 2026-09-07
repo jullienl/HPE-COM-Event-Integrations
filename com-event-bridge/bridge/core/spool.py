@@ -25,7 +25,7 @@ import sqlite3
 import threading
 import time
 
-from com_event_core import DedupStore, normalize
+from com_event_core import DedupStore, deliver_events, normalize
 
 log = logging.getLogger("com-event-bridge.spool")
 
@@ -116,12 +116,12 @@ class SpoolStore:
 
 
 class SpoolWorker(threading.Thread):
-    """Background thread that drains the spool into the target adapter."""
+    """Background thread that drains the spool into the target adapter(s)."""
 
-    def __init__(self, spool: SpoolStore, adapter, dedup: DedupStore) -> None:
+    def __init__(self, spool: SpoolStore, adapters, dedup: DedupStore) -> None:
         super().__init__(name="spool-worker", daemon=True)
         self._spool = spool
-        self._adapter = adapter
+        self._adapters = adapters
         self._dedup = dedup
         self._stop = threading.Event()
 
@@ -129,7 +129,8 @@ class SpoolWorker(threading.Thread):
         self._stop.set()
 
     def run(self) -> None:
-        log.info("spool worker started; draining to target=%s", self._adapter.name)
+        targets = ", ".join(a.name for a in self._adapters)
+        log.info("spool worker started; draining to target(s)=%s", targets)
         while not self._stop.is_set():
             claimed = self._spool.claim_due(int(time.time()))
             if claimed is None:
@@ -138,16 +139,15 @@ class SpoolWorker(threading.Thread):
 
             row_id, body, attempts = claimed
             try:
-                event = normalize(json.loads(body.decode("utf-8")))
+                events = normalize(json.loads(body.decode("utf-8")))
 
-                if self._dedup.is_duplicate(event.dedup_key):
-                    log.info("event %s duplicate; dropping from spool", event.event_id)
-                    self._spool.delete(row_id)
-                    continue
-
-                self._adapter.forward(event)
+                # Fan-out every derived event to every adapter. deliver_events()
+                # skips targets already done for an event and raises if any
+                # target fails, so the row is rescheduled and only the failed
+                # target(s) are re-attempted.
+                deliver_events(events, self._adapters, self._dedup)
                 self._spool.delete(row_id)
-                log.info("event %s delivered from spool", event.event_id)
+                log.info("event %s delivered from spool", events[0].event_id)
 
             except (json.JSONDecodeError, UnicodeDecodeError):
                 # Poison message: it will never parse — drop it rather than loop.

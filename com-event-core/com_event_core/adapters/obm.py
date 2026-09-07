@@ -12,6 +12,7 @@ import os
 import httpx
 
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
+from com_event_core.secrets import get_secret
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.obm")
@@ -31,7 +32,7 @@ class ObmAdapter(TargetAdapter):
 
     def __init__(self) -> None:
         self._url = os.environ["OBM_EVENT_API_URL"]
-        self._auth = (os.environ["OBM_USER"], os.environ["OBM_PASSWORD"])
+        self._auth = (os.environ["OBM_USER"], get_secret("OBM_PASSWORD"))
         self._timeout = int(os.environ.get("TARGET_TIMEOUT", "15"))
 
     def _to_obm(self, e: CanonicalEvent) -> dict:

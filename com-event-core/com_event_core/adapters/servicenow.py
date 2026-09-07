@@ -20,6 +20,7 @@ import os
 import httpx
 
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
+from com_event_core.secrets import get_secret
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.servicenow")
@@ -43,7 +44,7 @@ class ServiceNowAdapter(TargetAdapter):
         self._instance = os.environ["SNOW_INSTANCE"].rstrip("/")  # https://acme.service-now.com
         self._table = os.environ.get("SNOW_TABLE", "em_event")
         self._url = f"{self._instance}/api/now/table/{self._table}"
-        self._auth = (os.environ["SNOW_USER"], os.environ["SNOW_PASSWORD"])
+        self._auth = (os.environ["SNOW_USER"], get_secret("SNOW_PASSWORD"))
         self._timeout = int(os.environ.get("TARGET_TIMEOUT", "15"))
         self._resolved_state = os.environ.get("SNOW_RESOLVED_STATE", _INCIDENT_RESOLVED_STATE)
 

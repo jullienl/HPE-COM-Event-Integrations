@@ -12,6 +12,7 @@ import os
 import httpx
 
 from com_event_core.normalize import CanonicalEvent
+from com_event_core.secrets import get_secret
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.splunk")
@@ -23,7 +24,7 @@ class SplunkAdapter(TargetAdapter):
     def __init__(self) -> None:
         # e.g. https://splunk.example.com:8088/services/collector/event
         self._url = os.environ["SPLUNK_HEC_URL"]
-        self._token = os.environ["SPLUNK_HEC_TOKEN"]
+        self._token = get_secret("SPLUNK_HEC_TOKEN")
         self._source = os.environ.get("SPLUNK_SOURCE", "hpe-com")
         self._sourcetype = os.environ.get("SPLUNK_SOURCETYPE", "com:event")
         self._index = os.environ.get("SPLUNK_INDEX")  # optional

@@ -25,6 +25,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
+from com_event_core import get_secret
 from core.queue import get_publisher
 
 
@@ -53,7 +54,7 @@ logging.basicConfig(level=logging.INFO, handlers=[_handler], force=True)
 log = logging.getLogger("com-event-relay")
 
 # --- Config (fail fast if anything mandatory is missing) -----------------
-COM_SECRET = os.environ["COM_SHARED_SECRET"]
+COM_SECRET = get_secret("COM_SHARED_SECRET")
 SECRET_HEADER = os.environ.get("SHARED_SECRET_HEADER", "x-shim-secret").lower()
 # Cap request bodies to protect a public endpoint from oversized-payload abuse.
 MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", str(256 * 1024)))  # 256 KB

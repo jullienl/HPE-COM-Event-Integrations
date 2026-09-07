@@ -7,6 +7,7 @@ from typing import Iterator
 
 from azure.servicebus import ServiceBusClient
 
+from com_event_core import get_secret
 from .base import QueueConsumer, ReceivedMessage
 
 
@@ -20,7 +21,7 @@ class ServiceBusConsumer(QueueConsumer):
     """
 
     def __init__(self) -> None:
-        self._conn = os.environ["SERVICE_BUS_CONNECTION"]
+        self._conn = get_secret("SERVICE_BUS_CONNECTION")
         self._queue = os.environ["QUEUE_NAME"]
         self._max_wait = int(os.environ.get("RECEIVE_MAX_WAIT", "30"))
         self._client = ServiceBusClient.from_connection_string(self._conn)

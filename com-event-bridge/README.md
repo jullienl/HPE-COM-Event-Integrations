@@ -42,10 +42,12 @@ COM ──443──►  handshake ─► auth ─► normalize ─► deliver �
    `413` over that); malformed JSON is rejected with `400`.
 4. **Normalise.** The COM payload becomes a neutral `CanonicalEvent` (same model
    and mapping as com-event-relay, so target behaviour is identical).
-5. **Deliver** via the selected `TARGET` adapter (`obm` / `servicenow` / `opsramp` / `halo` / `splunk`
-   / `webhook`) — see [Delivery modes](#delivery-modes).
-6. **De-duplicate.** A local SQLite TTL store suppresses repeats (duplicate or
-   redelivered events for the same fault).
+5. **Deliver** via the adapter(s) named by `TARGETS` (`obm` / `servicenow` / `opsramp` / `halo` / `splunk`
+   / `github` / `slack` / `teams` / `jira` / `pagerduty` / `sentinel` / `datadog` / `elastic` / `bmc_helix` / `dynatrace` / `grafana` / `webhook`) — one target, or several comma-separated to fan out — see
+   [Delivery modes](#delivery-modes) and
+   [Delivering to multiple targets](../README.md#delivering-to-multiple-targets-at-once).
+6. **De-duplicate.** A local SQLite TTL store (keyed **per target**) suppresses
+   repeats (duplicate or redelivered events for the same fault).
 
 ## Delivery modes
 
@@ -115,7 +117,7 @@ spool volume is needed:
 
 ```bash
 cd bridge
-cp .env.example .env        # set COM_SHARED_SECRET + TARGET + target creds
+cp .env.example .env        # set COM_SHARED_SECRET + TARGETS + target creds
 # for this local smoke test only, force best-effort inline delivery:
 #   set DELIVERY_MODE=sync in .env  (production should use spool + a volume)
 pip install -e ../../com-event-core   # shared normaliser/dedup/adapters (+ httpx)
@@ -187,15 +189,113 @@ durable out of the box.
 | `DELIVERY_MODE` | no | `spool` (default, durable) or `sync` (best-effort). |
 | `SPOOL_PATH` | **yes, in `spool` mode** | Path to the spool DB on **durable** storage (mounted volume). Bridge won't start in spool mode if unset. Container default `/data/spool.db`. |
 | `SPOOL_MAX_BYTES` / `SPOOL_RETRY_SECONDS` / `SPOOL_RETRY_CAP` / `SPOOL_POLL_SECONDS` | no | Spool tuning (`spool` mode). |
-| `TARGET` | no | `obm` (default) / `servicenow` / `opsramp` / `halo` / `splunk` / `webhook`. |
+| `TARGETS` | no | Target(s): one name or comma-separated for fan-out, e.g. `halo,opsramp`. Default `webhook`. Each of `obm` / `servicenow` / `opsramp` / `halo` / `splunk` / `github` / `slack` / `teams` / `jira` / `pagerduty` / `sentinel` / `datadog` / `elastic` / `bmc_helix` / `dynatrace` / `grafana` / `webhook`. Fan-out is reliable in `spool` mode (retry re-attempts only failed targets); best-effort in `sync`. |
 | `TARGET_TIMEOUT` | no | Per-target HTTP timeout (s). Default `15`. |
+| `SERVER_MONITORS` | no | Server conditions to watch, comma-separated: `health` (default) / `power` / `connection` / `subscription`. Each opens/closes its own item. |
 | `DEDUP_DB_PATH` / `DEDUP_TTL_SECONDS` | no | De-dup store + window (`0` disables). |
-| `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD` | if `TARGET=obm` | OBM Event REST API + Basic auth. |
-| `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD` | if `TARGET=servicenow` | `SNOW_TABLE` optional (`em_event` default / `incident`). |
-| `OPSRAMP_API_URL` / `OPSRAMP_TENANT_ID` / `OPSRAMP_KEY` / `OPSRAMP_SECRET` | if `TARGET=opsramp` | OAuth2 client-credentials; `OPSRAMP_SERVICE_NAME` optional. |
-| `HALO_API_URL` / `HALO_CLIENT_ID` / `HALO_CLIENT_SECRET` | if `TARGET=halo` | OAuth2 client-credentials; `HALO_TENANT` / `HALO_TICKET_TYPE_ID` optional. |
-| `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN` | if `TARGET=splunk` | HEC endpoint + token. |
-| `WEBHOOK_URL` | if `TARGET=webhook` | Optional `WEBHOOK_AUTH_HEADER`/`_VALUE`. |
+| `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD` | if `obm` in `TARGETS` | OBM Event REST API + Basic auth. |
+| `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD` | if `servicenow` in `TARGETS` | `SNOW_TABLE` optional (`em_event` default / `incident`). |
+| `OPSRAMP_API_URL` / `OPSRAMP_TENANT_ID` / `OPSRAMP_KEY` / `OPSRAMP_SECRET` | if `opsramp` in `TARGETS` | OAuth2 client-credentials; `OPSRAMP_SERVICE_NAME` optional. |
+| `HALO_API_URL` / `HALO_CLIENT_ID` / `HALO_CLIENT_SECRET` | if `halo` in `TARGETS` | OAuth2 client-credentials; `HALO_TENANT` / `HALO_TICKET_TYPE_ID` optional. |
+| `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN` | if `splunk` in `TARGETS` | HEC endpoint + token. |
+| `GITHUB_REPO` / `GITHUB_TOKEN` | if `github` in `TARGETS` | `owner/repo` + PAT (`issues:write`); `GITHUB_API_URL` (GHE) / `GITHUB_LABELS` optional. |
+| `SLACK_WEBHOOK_URL` | if `slack` in `TARGETS` | Incoming Webhook URL; `SLACK_USERNAME` optional. |
+| `TEAMS_WEBHOOK_URL` | if `teams` in `TARGETS` | Teams Workflows / Power Automate webhook URL. |
+| `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` / `JIRA_PROJECT_KEY` | if `jira` in `TARGETS` | Jira Cloud site + Basic auth; `JIRA_ISSUE_TYPE` / `JIRA_CLOSE_TRANSITION` / `JIRA_LABELS` optional. |
+| `PAGERDUTY_ROUTING_KEY` | if `pagerduty` in `TARGETS` | Events API v2 integration key; `PAGERDUTY_API_URL` (EU) optional. |
+| `SENTINEL_WORKSPACE_ID` / `SENTINEL_SHARED_KEY` | if `sentinel` in `TARGETS` | Log Analytics workspace + key; `SENTINEL_LOG_TYPE` optional. |
+| `DATADOG_API_KEY` | if `datadog` in `TARGETS` | API key; `DATADOG_SITE` / `DATADOG_TAGS` optional. |
+| `ELASTIC_URL` / `ELASTIC_API_KEY` | if `elastic` in `TARGETS` | Cluster URL + API key (or `ELASTIC_USER`/`ELASTIC_PASSWORD`); `ELASTIC_INDEX` optional. |
+| `BMC_HELIX_URL` / `BMC_HELIX_USER` / `BMC_HELIX_PASSWORD` | if `bmc_helix` in `TARGETS` | AR System REST base + JWT auth; `BMC_HELIX_SERVICE_TYPE` / `BMC_HELIX_ASSIGNED_GROUP` / `BMC_HELIX_STATUS_RESOLVED` optional. |
+| `DYNATRACE_URL` / `DYNATRACE_API_TOKEN` | if `dynatrace` in `TARGETS` | Environment API base + token (`events.ingest`); `DYNATRACE_ENTITY_SELECTOR` / `DYNATRACE_PROPERTIES` optional. |
+| `GRAFANA_LOKI_URL` / `GRAFANA_LOKI_USER` / `GRAFANA_API_TOKEN` | if `grafana` in `TARGETS` | Grafana Cloud Logs (Loki) URL + user id + token (`logs:write`); `GRAFANA_LABELS` optional. |
+| `WEBHOOK_URL` | if `webhook` in `TARGETS` | Optional `WEBHOOK_AUTH_HEADER`/`_VALUE`. |
+
+> **Every secret above can be read from a file instead of the environment** —
+> see [Secrets management](#secrets-management).
+
+## Secrets management
+
+Sensitive values — `COM_SHARED_SECRET`, the target passwords / client secrets /
+tokens (`OBM_PASSWORD`, `SNOW_PASSWORD`, `OPSRAMP_KEY`/`OPSRAMP_SECRET`,
+`HALO_CLIENT_ID`/`HALO_CLIENT_SECRET`, `SPLUNK_HEC_TOKEN`, `GITHUB_TOKEN`,
+`SLACK_WEBHOOK_URL`, `TEAMS_WEBHOOK_URL`, `JIRA_API_TOKEN`, `PAGERDUTY_ROUTING_KEY`,
+`SENTINEL_SHARED_KEY`, `DATADOG_API_KEY`, `ELASTIC_API_KEY`/`ELASTIC_PASSWORD`,
+`BMC_HELIX_PASSWORD`, `DYNATRACE_API_TOKEN`, `GRAFANA_API_TOKEN`,
+`WEBHOOK_AUTH_VALUE`)
+— should **not** live in a plaintext `.env` in production. Every one of them can
+instead be read from a **file**, so you can back them with a vault or the
+platform's native secret store.
+
+**How it works.** For any secret `<NAME>`, the bridge resolves it in this order:
+
+1. `<NAME>_FILE` — if set, the secret is the **contents of that file** (a trailing
+   newline is stripped);
+2. `<NAME>` — otherwise the plain environment variable (handy for local dev);
+3. otherwise startup **fails fast** with a clear "missing secret" error.
+
+So you keep the value out of the environment entirely by pointing `<NAME>_FILE` at a
+path your deployment projects onto disk. Reading a file avoids the value leaking
+into `docker inspect`, `/proc/<pid>/environ`, or child processes.
+
+### Docker Compose / Swarm secrets
+
+*Use this if you run the bridge with `docker compose` (the default deployment).*
+
+Docker mounts each secret at `/run/secrets/<name>` on **tmpfs** (never in the
+image or `docker inspect`). In [docker-compose.yml](docker-compose.yml), uncomment
+the `secrets:` blocks and set the `*_FILE` vars (and remove those secrets from
+`bridge/.env`):
+
+```yaml
+services:
+  bridge:
+    environment:
+      COM_SHARED_SECRET_FILE: /run/secrets/com_shared_secret
+      OBM_PASSWORD_FILE: /run/secrets/obm_password
+    secrets: [com_shared_secret, obm_password]
+secrets:
+  com_shared_secret:
+    file: ./secrets/com_shared_secret.txt   # or `external: true` on Swarm
+  obm_password:
+    file: ./secrets/obm_password.txt
+```
+
+Create the files (`0400`, git-ignored) or, on Swarm,
+`docker secret create com_shared_secret ./com_shared_secret.txt` and use
+`external: true`.
+
+### systemd `LoadCredential` (bare metal, no Docker)
+
+*Use this if you run the bridge directly on a Linux host via systemd (no Docker).*
+
+systemd copies each credential into a private, per-service `0400` tmpfs dir
+exposed as `$CREDENTIALS_DIRECTORY` (`%d`). In
+[deploy/systemd/com-event-bridge.service](deploy/systemd/com-event-bridge.service),
+uncomment:
+
+```ini
+LoadCredential=com_shared_secret:/etc/com-event-bridge/com_shared_secret
+LoadCredential=obm_password:/etc/com-event-bridge/obm_password
+Environment=COM_SHARED_SECRET_FILE=%d/com_shared_secret
+Environment=OBM_PASSWORD_FILE=%d/obm_password
+```
+
+Write the source files as `root:0400`, then drop those secrets from
+`bridge.env`. For encryption-at-rest (TPM / host key) use
+`LoadCredentialEncrypted=` with `systemd-creds encrypt`.
+
+### HashiCorp Vault (on-prem)
+
+*Use this only if your site already runs HashiCorp Vault.*
+
+Run the **Vault Agent** alongside the bridge and render a secret to a tmpfs file
+with an Agent template, then point the `*_FILE` var at it — e.g. template
+`{{ with secret "secret/com-bridge" }}{{ .Data.data.com_shared_secret }}{{ end }}`
+to `/run/com-bridge/com_shared_secret`, and set
+`COM_SHARED_SECRET_FILE=/run/com-bridge/com_shared_secret`. Agent handles renewal;
+the bridge just re-reads the file at startup. (For Kubernetes, the Vault Agent
+Injector or the Secrets Store CSI driver mount files the same way.)
 
 ## Register the webhook in COM
 

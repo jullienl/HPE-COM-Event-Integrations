@@ -122,11 +122,20 @@ def main() -> None:
     action = sys.argv[2] if len(sys.argv) > 2 else "raise"
 
     payload = _build_payload(resource, action)
-    event = normalize(payload)
+    events = normalize(payload)
 
     print(f"===== COM {resource} {action} =====")
     _dump("1. raw COM payload in", payload)
-    _dump("2. normalize() -> CanonicalEvent", dataclasses.asdict(event))
+    if len(events) > 1:
+        _dump(
+            f"2. normalize() -> {len(events)} CanonicalEvents (one per condition)",
+            [dataclasses.asdict(e) for e in events],
+        )
+    else:
+        _dump("2. normalize() -> CanonicalEvent", dataclasses.asdict(events[0]))
+
+    # Adapters map one event at a time; show what each builds for the first.
+    event = events[0]
 
     print("\n===== 3. what each adapter builds =====")
     _dump("obm", ObmAdapter()._to_obm(event))

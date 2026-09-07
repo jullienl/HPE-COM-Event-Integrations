@@ -49,6 +49,79 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   `SPOOL_PATH=/data/spool.db`); bare-metal/systemd:
   `/var/lib/com-event-bridge/spool.db`.
 
+## Secrets (file-or-env, vendor-neutral)
+
+- **Read every sensitive value via `get_secret("NAME")`** from
+  `com_event_core.secrets` — NEVER `os.environ["NAME"]` for a password / client
+  secret / token / connection string / shared secret. Resolution order:
+  `NAME_FILE` (read file, strip trailing `\n`) → `NAME` (env) → `default` / raise
+  `KeyError` when `required` (the default). Non-secrets (URLs, usernames, IDs,
+  table names) stay on `os.environ`.
+- **Why file-first:** file contents don't leak via `docker inspect`,
+  `/proc/<pid>/environ`, or child procs, and any vault projects secrets as files
+  (Docker `/run/secrets/*`, K8s Secrets Store CSI = Key Vault / Secrets Manager,
+  systemd `LoadCredential` → `$CREDENTIALS_DIRECTORY`, Vault Agent → tmpfs). No
+  cloud SDK dependency — the bridge (on-prem, no cloud) uses the SAME code path.
+- **Startup validators must accept the `_FILE` form.** The queue `_require()`
+  treats a var as present if `NAME` **or** `NAME_FILE` is set — any new
+  "is this configured?" check must do the same, else file-backed secrets wrongly
+  fail fast.
+- General rule: a secret sourced from a mounted file is the safe production
+  default; the plain env var is the dev-convenience fallback, not the reverse.
+
+## Multi-adapter fan-out + dedup (critical)
+
+- **Deliver via the shared `deliver(event, adapters, dedup)`** in
+  `com_event_core.deliver` — never call `adapter.forward()` directly in a
+  consumer. Both the shim and the bridge/spool-worker use it, so fan-out + retry
+  semantics stay identical.
+- **Selection: `get_adapters()`.** `TARGETS` is the single knob — one name or
+  comma-separated for fan-out (`TARGETS=halo,slack`); default `webhook` (the
+  vendor-neutral target). Names are
+  lower-cased + de-duped, order preserved; unknown name → raise. There is no
+  `TARGET` (singular) alias and no `get_adapter()` — both were removed.
+- **Dedup is two-phase and per-adapter.** Key on `f"{event.dedup_key}:{adapter.name}"`.
+  Use `dedup.already_done(key)` (read-only) then `dedup.mark_done(key)` **only
+  after a successful `forward()`**. NEVER mark before delivery.
+- **Record the idempotency key AFTER the side effect succeeds, not before.** The
+  old mark-on-check `is_duplicate()` was removed because a transient failure +
+  retry got wrongly suppressed → **silent event loss**. Always use the two-phase
+  `already_done()` / `mark_done()` pair on a delivery path.
+- **Partial failure → `PartialDeliveryError`.** `deliver()` keeps going past a
+  failing adapter, marks the ones that succeed, then raises. Callers retry the
+  whole event (spool reschedule / queue `abandon`); already-done adapters are
+  skipped so only failed targets are re-attempted (no duplicate tickets).
+- **Fan-out is reliable only in spool/queue mode.** `sync` has no retry, so a
+  failed target's copy is lost — consistent with `sync` being best-effort.
+- Two instances of the **same** adapter type (e.g. two `webhook`s) is NOT
+  supported yet — adapters read fixed global env vars (`WEBHOOK_URL`), so they'd
+  collide. Needs per-instance config namespacing (labelled targets); tracked in
+  the root README roadmap.
+
+## Server snapshots + multi-condition monitoring (critical)
+
+- **A COM `.../server` webhook is a full-state SNAPSHOT, not a "field X changed"
+  delta.** COM never says which attribute changed, so "monitor attribute X" = a
+  predicate over the whole snapshot on each delivery. Don't assume a delta.
+- **`normalize()` returns `list[CanonicalEvent]`, one per ENABLED condition.**
+  Server conditions live in a table (`_SERVER_CONDITIONS` in `normalize.py`):
+  `health` (default) / `power` / `connection` / `subscription`, chosen via
+  `SERVER_MONITORS` (comma-separated, unknown name → `ValueError`, empty →
+  `health`). `alert`/generic still yield one event (wrapped in a list).
+- **Correlation key MUST be per-condition: `server:<serial>:<condition>`.** A
+  per-*server* key (`server:<serial>`) collides the moment >1 attribute is
+  watched — a "reconnected" clear would close the "powered off" issue. Any new
+  condition adds its own suffix; never share one key across conditions.
+- **Deliver a batch with `deliver_events(events, adapters, dedup)`** (in
+  `com_event_core.deliver`) — it loops `deliver()` per event, keeps going past a
+  failing one, and raises an aggregated `PartialDeliveryError` so the caller
+  retries the whole payload; per-(event,adapter) dedup skips the ones already
+  done (no duplicate tickets). All three consumers (shim, bridge sync, spool
+  worker) call it.
+- **Stateless snapshots emit a `clear` for every healthy condition on every
+  delivery** — dedup suppresses the steady-state repeats and the adapter close is
+  a no-op when nothing is open. Expected, not a bug.
+
 ## Build / structure quick facts
 
 - Monorepo, self-contained Docker builds: build context is the **repo root**;

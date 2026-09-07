@@ -14,8 +14,21 @@ guide covers them.
 - **Inbound firewall:** allow `443` **only** from COM / HPE GreenLake egress
   ranges. Deny everything else. Do **not** expose the app port (`8080`) — only
   nginx's `443` is public; the app binds to `127.0.0.1`.
-- **Outbound firewall:** allow only what the selected `TARGET` needs (e.g. the OBM
-  Event API host, the ServiceNow instance, the Splunk HEC). Deny the rest.
+- **Outbound firewall:** allow only what the selected target(s) need — e.g. the
+  OBM Event API host, the ServiceNow instance, the Splunk HEC. When you fan out
+  with `TARGETS=<name>,<name>`, allow the egress for **every** target listed.
+  Deny the rest.
+
+> **GreenLake webhook source IPs (for the inbound allowlist).** All outbound
+> GreenLake traffic — including COM webhook delivery — originates from the NAT
+> gateway IPs of the cluster hosting your tenant. HPE publishes the current
+> production NAT IPs in the
+> [GreenLake webhooks FAQ](https://developer.greenlake.hpe.com/docs/greenlake/guides/public/frequently_asked_questions/webhook_faq#what-source-ip-addresses-does-greenlake-use-when-delivering-webhook-events).
+> These IPs are **infrastructure-managed and can change** during cluster
+> upgrades, so treat the list as a point-in-time snapshot: confirm the current
+> values with HPE support before relying on them, re-check if deliveries start
+> failing after an infrastructure change, and keep the **shared-secret header**
+> (not IP allowlisting) as your primary, durable authentication control.
 
 ## 2. TLS termination
 

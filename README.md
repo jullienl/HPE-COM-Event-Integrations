@@ -14,11 +14,14 @@ them.
 - [Why this project exists](#why-this-project-exists)
 - [Key capabilities](#key-capabilities)
 - [Which project do I use?](#which-project-do-i-use)
+  - [Relay vs bridge — pros & cons](#relay-vs-bridge--pros--cons)
 - [Projects in this repo](#projects-in-this-repo)
 - [Targets supported](#targets-supported)
+  - [Delivering to multiple targets at once](#delivering-to-multiple-targets-at-once)
 - [COM resource types & the raise / clear lifecycle](#com-resource-types--the-raise--clear-lifecycle)
 - [Images](#images)
 - [Documentation](#documentation)
+- [Roadmap](#roadmap)
 - [License](#license)
 
 ## Why this project exists
@@ -117,6 +120,21 @@ flowchart TD
 | **Single on-prem box** | [com-event-bridge](com-event-bridge) | No cloud allowed, or you just want the smallest footprint. One container receives, transforms, and forwards in a single process, with an optional local disk spool for durability. |
 | **Native integration** | — (product) | If you already run **OpsRamp** or **ServiceNow** *and* can expose an endpoint COM reaches, both have a **built-in COM integration** — no shim/relay needed. But if you **can't open an inbound firewall port**, use the outbound-only relay + shim above instead. See the relay README's "native integrations" note. |
 
+### Relay vs bridge — pros & cons
+
+Both run the **same pipeline** (handshake, auth, normalise, de-dup, correlate,
+forward) from the shared `com-event-core`; they differ only in **where the public
+edge lives** and **how many moving parts** you operate.
+
+| | **com-event-relay** (cloud edge + on-prem shim) | **com-event-bridge** (single on-prem box) |
+|---|---|---|
+| **Pros** | • **No inbound port** into your network — the shim is outbound-only, pulls from the queue.<br>• Public edge (DNS, TLS, 443, patching, autoscale) is **managed by the cloud**.<br>• **Durable cloud queue** absorbs bursts + target outages; DLQ quarantines bad events.<br>• Relay **scales horizontally**; receive and deliver scale independently. | • **No cloud dependency** — everything stays on-prem, one container.<br>• **Smallest footprint / simplest mental model** — one process, one deploy.<br>• No cloud queue cost or account to manage.<br>• Full data path stays inside your datacenter. |
+| **Cons** | • Requires a **managed cloud account** (Azure/AWS) + a **queue** (Service Bus/SQS) — more services, some cost.<br>• **Two components** to deploy (relay + shim) instead of one. | • **You own the public edge**: DNS, CA-signed cert lifecycle, inbound **443**, host patching (ships nginx + certbot to help).<br>• Durability is a **local on-disk spool** only — no cross-host queue, no autoscale; box is a single point of failure. |
+| **Best when** | You can use a managed cloud and want **zero inbound exposure** + elastic, resilient delivery. | You **can't/won't use cloud**, or want the **minimal** all-in-one and are willing to run the public edge yourself. |
+
+Full trade-offs and the deployment-model decision are in the
+[relay README](com-event-relay/README.md#choosing-a-deployment-model).
+
 ### Why host the relay in Azure / AWS?
 
 COM is a SaaS service that **pushes** events to a public HTTPS endpoint you
@@ -188,18 +206,32 @@ relay/shim detail.
 ## Targets supported
 
 All adapters live in `com-event-core`, so **every target works in both projects**
-(com-event-relay's shim *and* com-event-bridge) — pick one per deployment with
-`TARGET=<name>`. The pipeline handles the COM handshake, auth, normalisation,
-**de-duplication**, retry, and (relay) queue / (bridge) spool; an adapter only
-maps the `CanonicalEvent` to the target's API.
+(com-event-relay's shim *and* com-event-bridge). Select the target(s) with a
+single env var — `TARGETS=<name>` for one, or `TARGETS=<name>,<name>` to fan one
+event out to several (see
+[Delivering to multiple targets at once](#delivering-to-multiple-targets-at-once)).
+The pipeline handles the COM handshake, auth, normalisation, **de-duplication**,
+retry, and (relay) queue / (bridge) spool; an adapter only maps the
+`CanonicalEvent` to the target's API.
 
 | `TARGET` | Layer | Role | Auth | In both projects | Native COM path? | Close on clear | Key config |
 |----------|-------|------|------|:----------------:|:----------------:|:--------------:|------------|
-| `obm` | ITOM (event) | OpenText Operations Bridge Manager event | Basic | ✅ | — | ✅ severity→normal + closed (correlation key) | `OBM_EVENT_API_URL`, `OBM_USER`, `OBM_PASSWORD` |
 | `servicenow` | ITSM | Event Management (`em_event`) or incident creation | Basic | ✅ | ✅ native* | ✅ em_event Clear / incident resolve (lookup by correlation) | `SNOW_INSTANCE`, `SNOW_USER`, `SNOW_PASSWORD`, `SNOW_TABLE` |
-| `opsramp` | ITOM / AIOps | Alert / event ingestion | OAuth2 | ✅ | ✅ native* | ✅ state→Ok (alertKey correlation) | `OPSRAMP_API_URL`, `OPSRAMP_TENANT_ID`, `OPSRAMP_KEY`, `OPSRAMP_SECRET` |
 | `halo` | ITSM | HaloITSM ticket / incident creation | OAuth2 | ✅ | — | ✅ look up open ticket by `thirdpartyref` and set closed status | `HALO_API_URL`, `HALO_CLIENT_ID`, `HALO_CLIENT_SECRET` |
+| `jira` | ITSM | Jira Service Management / Software issue creation | Basic (email + API token) | ✅ | — | ✅ find open issue by `com-<key>` label and run a close transition | `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` |
+| `bmc_helix` | ITSM | BMC Helix ITSM (Remedy) incident creation | JWT (user + password) | ✅ | — | ✅ find open incident by `[COM:<key>]` marker and set resolved status | `BMC_HELIX_URL`, `BMC_HELIX_USER`, `BMC_HELIX_PASSWORD` |
+| `opsramp` | ITOM / AIOps | Alert / event ingestion | OAuth2 | ✅ | ✅ native* | ✅ state→Ok (alertKey correlation) | `OPSRAMP_API_URL`, `OPSRAMP_TENANT_ID`, `OPSRAMP_KEY`, `OPSRAMP_SECRET` |
+| `obm` | ITOM (event) | OpenText Operations Bridge Manager event | Basic | ✅ | — | ✅ severity→normal + closed (correlation key) | `OBM_EVENT_API_URL`, `OBM_USER`, `OBM_PASSWORD` |
 | `splunk` | SIEM / log | HTTP Event Collector (HEC) ingestion | HEC token | ✅ | — | ➖ clear logged as its own event (`action=clear`) | `SPLUNK_HEC_URL`, `SPLUNK_HEC_TOKEN` |
+| `elastic` | SIEM / log | Index a document into Elasticsearch | API key or basic | ✅ | — | ➖ clear indexed as its own document (`action=clear`) | `ELASTIC_URL`, `ELASTIC_API_KEY` |
+| `sentinel` | SIEM | Microsoft Sentinel / Log Analytics ingestion (Data Collector API) | Workspace id + shared key | ✅ | — | ➖ clear ingested as its own record (`action=clear`) | `SENTINEL_WORKSPACE_ID`, `SENTINEL_SHARED_KEY` |
+| `pagerduty` | Alerting / on-call | Events API v2 incident trigger | Routing key | ✅ | — | ✅ native `resolve` on the same `dedup_key` | `PAGERDUTY_ROUTING_KEY` |
+| `slack` | ChatOps | Post a formatted message to a Slack Incoming Webhook | Webhook URL | ✅ | — | ➖ clear posted as its own message (green "Resolved") | `SLACK_WEBHOOK_URL` |
+| `teams` | ChatOps | Post an Adaptive Card via a Teams Workflows webhook | Webhook URL | ✅ | — | ➖ clear posted as its own card | `TEAMS_WEBHOOK_URL` |
+| `github` | Issue tracking | Open a GitHub issue, close it on the matching clear | PAT (`issues:write`) | ✅ | — | ✅ find open issue by `com:<key>` label and close it | `GITHUB_REPO`, `GITHUB_TOKEN` |
+| `datadog` | Monitoring | Events API with `aggregation_key` grouping | API key | ✅ | — | ➖ recovery posted as a `success` event (same `aggregation_key`) | `DATADOG_API_KEY` |
+| `dynatrace` | Monitoring | Events API v2 ingest (`events.ingest`) | API token | ✅ | — | ➖ recovery posted as a `CUSTOM_INFO` event (same `com.correlation_key`) | `DYNATRACE_URL`, `DYNATRACE_API_TOKEN` |
+| `grafana` | Observability / log | Ship each event as a log line to Grafana Cloud Logs (Loki) | Basic (user id + token) | ✅ | — | ➖ clear shipped as its own log line (`action=clear`) | `GRAFANA_LOKI_URL`, `GRAFANA_LOKI_USER`, `GRAFANA_API_TOKEN` |
 | `webhook` | Generic | POST the canonical event JSON to any URL | Optional header | ✅ | — | ➖ clear delivered as its own event (`action=clear`) | `WEBHOOK_URL` (+ optional `WEBHOOK_AUTH_HEADER`/`_VALUE`) |
 
 Adding a new target is a small adapter in `com-event-core` (map `CanonicalEvent`
@@ -219,6 +251,55 @@ Adding a new target is a small adapter in `com-event-core` (map `CanonicalEvent`
 > built-in **de-duplication** means a repeated COM event won't open a second
 > ticket for the same fault — one ticket per real problem, not one per duplicate
 > or redelivered event.
+
+> ⚠️ **Adapter testing status.** Only the `github` adapter has been exercised
+> end-to-end against a live target. Every other adapter (`servicenow`, `opsramp`,
+> `halo`, `splunk`, `obm`, `slack`, `teams`, `jira`, `pagerduty`, `sentinel`,
+> `datadog`, `elastic`, `bmc_helix`, `dynatrace`, `grafana`, `webhook`) is
+> implemented against each vendor's **documented API** but has **not** been
+> validated against a live tenant. Expect to do a short connectivity test and some
+> **per-instance tuning** before production use — in particular the `jira`
+> close-transition name (`JIRA_CLOSE_TRANSITION`), the `bmc_helix` status/field
+> values (`BMC_HELIX_STATUS_RESOLVED`, impact/urgency selections) and the
+> `sentinel` shared-key / custom-table (`<LOG_TYPE>_CL`) conventions vary between
+> tenants.
+
+### Delivering to multiple targets at once
+
+One COM event often needs to reach **more than one system**: open a **ticket** in
+HaloITSM *and* raise an **alert** in OpsRamp, or file an incident *and* post a
+**Slack** heads-up so the on-call sees it immediately. Rather than run a separate
+deployment per target, set a single **`TARGETS`** env var and a single
+relay/bridge fans each event out to all of them:
+
+```bash
+TARGETS=halo             # one target
+TARGETS=halo,opsramp     # ticket + alert from the same COM event
+TARGETS=servicenow,splunk # incident + a SIEM copy for audit/search
+TARGETS=github,slack     # open an issue + post a Slack heads-up to on-call
+```
+
+- **One variable, `TARGETS`.** Give it a single name or a comma-separated list —
+  the same knob handles both, so there's no separate single-vs-many setting to get
+  wrong. If unset the default is `webhook` (the vendor-neutral target). Each named
+  adapter reads its own credentials from the environment, so configure the env
+  vars for **every** target you list.
+- **Independent, correlated delivery per target.** De-duplication and raise/clear
+  correlation are tracked **per adapter**, so each target gets exactly one
+  delivery per event and a later *clear* closes the item on each system that got
+  the *raise*.
+- **Partial failure is safe.** If one target is down, the others are still
+  delivered; the event is then retried and **only the failed target** is
+  re-attempted — no duplicate tickets, no lost events.
+- **Reliable only in spool/queue mode.** Multi-target fan-out depends on the
+  retry that the bridge's **spool** and the relay's **queue** provide. In the
+  bridge's opt-in `sync` mode there is no retry, so a failed target's copy is
+  lost (best-effort) — use spool/queue when you fan out to targets you can't
+  afford to miss.
+- **Two of the *same* adapter type** (e.g. two generic `webhook`s to different
+  URLs) isn't supported yet — adapters read fixed global env vars, so they'd
+  collide. Fanning out to *different* types (the cases above) works today; the
+  same-type case is tracked in the [Roadmap](#roadmap).
 
 ## COM resource types & the raise / clear lifecycle
 
@@ -285,8 +366,34 @@ package is installed into the shim/bridge images from local source.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — every process (handshake, auth, input
   hardening, enqueue/dequeue, normalisation, de-dup, correlation, forwarding,
   retry, spool, health) mapped to the exact file that implements it.
+- **Add a new target adapter** — step-by-step guide in
+  [com-event-core/README.md](com-event-core/README.md#adding-a-new-target).
+- **Secrets management** — keep credentials out of `.env` by reading them from a
+  vault/CSI/Docker/systemd-projected file (`<NAME>_FILE`):
+  [relay/shim](com-event-relay/README.md#secrets-management) ·
+  [bridge](com-event-bridge/README.md#secrets-management).
 - Each project has its own README with quick start, configuration, and deployment.
 - On-prem hardening for the single box: [com-event-bridge/HARDENING.md](com-event-bridge/HARDENING.md).
+
+## Roadmap
+
+Planned enhancements across the repo (all land in the shared `com-event-core`, so
+the relay's shim and the bridge inherit them together):
+
+- **Multiple instances of the *same* adapter type** — fanning out to two targets
+  of one type (e.g. two `webhook`s, or a prod + a lab Slack) isn't supported yet:
+  adapters read fixed global env vars (`WEBHOOK_URL`), so two would collide. Needs
+  per-instance config namespacing — labelled targets like `TARGETS=webhook:jira,webhook:pd`
+  each reading its own `WEBHOOK__JIRA_URL` / `WEBHOOK__PD_URL`.
+- **Live-tenant validation of the built-in adapters** — only `obm` has been
+  exercised end-to-end; the other 16 are coded against each vendor's documented
+  API and need a connectivity test + per-instance tuning (see the caveat under
+  [Targets supported](#targets-supported)).
+- **More target adapters** — each is a small `CanonicalEvent` → target mapping in
+  `com-event-core`; contributions welcome.
+- **Deploy scripts for the shim** (Azure Container Instances / AWS ECS) and a
+  systemd unit for bare on-prem hosts.
+- **Bicep / CloudFormation templates** + "Deploy to Azure" / one-click AWS.
 
 ## License
 

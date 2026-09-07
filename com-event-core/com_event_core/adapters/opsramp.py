@@ -25,6 +25,7 @@ import time
 import httpx
 
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
+from com_event_core.secrets import get_secret
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.opsramp")
@@ -45,8 +46,8 @@ class OpsRampAdapter(TargetAdapter):
     def __init__(self) -> None:
         self._api = os.environ["OPSRAMP_API_URL"].rstrip("/")  # https://acme.api.opsramp.com
         self._tenant = os.environ["OPSRAMP_TENANT_ID"]
-        self._key = os.environ["OPSRAMP_KEY"]
-        self._secret = os.environ["OPSRAMP_SECRET"]
+        self._key = get_secret("OPSRAMP_KEY")
+        self._secret = get_secret("OPSRAMP_SECRET")
         self._service = os.environ.get("OPSRAMP_SERVICE_NAME", "HPE COM")
         self._timeout = int(os.environ.get("TARGET_TIMEOUT", "15"))
         self._alerts_url = f"{self._api}/api/v2/tenants/{self._tenant}/alerts"

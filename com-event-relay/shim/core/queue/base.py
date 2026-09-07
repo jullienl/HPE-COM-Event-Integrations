@@ -75,7 +75,12 @@ def get_consumer() -> QueueConsumer:
 
 
 def _require(backend: str, names: list[str]) -> None:
-    missing = [n for n in names if not os.environ.get(n)]
+    # A name is present if either <name> or its file-backed <name>_FILE is set,
+    # so secrets projected as files (vault/CSI/Docker/systemd) satisfy the check.
+    missing = [
+        n for n in names
+        if not os.environ.get(n) and not os.environ.get(f"{n}_FILE")
+    ]
     if missing:
         raise RuntimeError(
             f"QUEUE_BACKEND='{backend}' requires env var(s): {', '.join(missing)}"

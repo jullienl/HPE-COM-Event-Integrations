@@ -21,6 +21,18 @@ services:
     volumes:
       - bridge-data:/data # persists spool.db + dedup.db across restarts
     restart: unless-stopped
+    # --- Secrets as files (recommended for production) --------------------
+    # Keep secrets OUT of ./bridge/.env by mounting them as files and pointing
+    # the matching *_FILE env var at the mount. Uncomment the block below (and
+    # the top-level `secrets:` section at the bottom) and remove the secret
+    # lines from ./bridge/.env. Docker mounts each secret at /run/secrets/<name>
+    # on tmpfs, so it never lands in the image or `docker inspect`.
+    # environment:
+    #   COM_SHARED_SECRET_FILE: /run/secrets/com_shared_secret
+    #   OBM_PASSWORD_FILE: /run/secrets/obm_password
+    # secrets:
+    #   - com_shared_secret
+    #   - obm_password
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz').status==200 else 1)"]
       interval: 30s
@@ -53,3 +65,12 @@ volumes:
   bridge-data:
   certbot-etc:
   certbot-www:
+
+# --- Secrets (uncomment together with the `secrets:` block on the bridge
+# service above). `file:` reads a local file at deploy time; on Swarm use
+# `external: true` to reference secrets created with `docker secret create`.
+# secrets:
+#   com_shared_secret:
+#     file: ./secrets/com_shared_secret.txt
+#   obm_password:
+#     file: ./secrets/obm_password.txt

@@ -15,7 +15,7 @@ from com_event_core.normalize import CanonicalEvent
 class TargetAdapter(ABC):
     """Contract every target integration implements."""
 
-    #: Short name used to select the adapter via the TARGET env var.
+    #: Short name used to select the adapter via the TARGETS env var.
     name: str = "base"
 
     @abstractmethod

@@ -16,6 +16,7 @@ import os
 import httpx
 
 from com_event_core.normalize import CanonicalEvent
+from com_event_core.secrets import get_secret
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.webhook")
@@ -30,7 +31,7 @@ class WebhookAdapter(TargetAdapter):
         # Optional static auth header, e.g. "Authorization: Bearer xyz" or a
         # shared secret expected by the receiver.
         self._header_name = os.environ.get("WEBHOOK_AUTH_HEADER")
-        self._header_value = os.environ.get("WEBHOOK_AUTH_VALUE")
+        self._header_value = get_secret("WEBHOOK_AUTH_VALUE", required=False)
 
     def forward(self, event: CanonicalEvent) -> None:
         headers = {"Content-Type": "application/json"}

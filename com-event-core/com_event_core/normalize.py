@@ -28,12 +28,28 @@ Each event carries an ``action`` of ``raise`` or ``clear`` and a stable
 adapters can close/resolve the item they previously opened. ``dedup_key`` stays
 per-(problem, action, severity) so repeats are suppressed but a raise and its
 clear are never collapsed into one.
+
+Server conditions (multi-attribute monitoring)
+----------------------------------------------
+A ``.../server`` webhook is a **full-state snapshot**, not a "field X changed"
+delta, so "monitor attribute X" means evaluating a predicate over the snapshot on
+each delivery. ``normalize()`` returns a **list** of events: it evaluates each
+enabled *condition* (health / power / connection / subscription) and emits one
+event per condition, each with its own ``correlation_key``
+(``server:<serial>:<condition>``) so a raise for one condition is never closed by
+the recovery of another. Enable conditions with the ``SERVER_MONITORS`` env var
+(comma-separated); the default is ``health`` so existing behaviour is unchanged.
+Because snapshots are stateless, a healthy condition emits a ``clear`` on every
+delivery — dedup suppresses the steady-state repeats and an adapter close is a
+no-op when nothing is open.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 
 # Canonical severity scale (targets map from this to their own scales).
@@ -125,65 +141,211 @@ def _map_alert_severity(severity: str | None) -> str:
     }.get((severity or "").upper(), SEVERITY_WARNING)
 
 
-def normalize(payload: dict) -> CanonicalEvent:
-    """Convert a raw COM webhook payload into a CanonicalEvent.
+def normalize(payload: dict) -> list[CanonicalEvent]:
+    """Convert a raw COM webhook payload into one or more CanonicalEvents.
 
     Dispatches on the payload ``type`` (server / alert), falling back to a
-    generic mapping for any other resource type so nothing is dropped.
+    generic mapping for any other resource type so nothing is dropped. A
+    ``.../server`` snapshot yields one event **per enabled condition** (see
+    ``SERVER_MONITORS``); ``.../alert`` and generic payloads yield a single event.
     """
     ptype = str(payload.get("type", "")).lower()
     if ptype.endswith("/server"):
         return _normalize_server(payload)
     if ptype.endswith("/alert"):
-        return _normalize_alert(payload)
-    return _normalize_generic(payload)
+        return [_normalize_alert(payload)]
+    return [_normalize_generic(payload)]
 
 
-def _normalize_server(payload: dict) -> CanonicalEvent:
-    """Map a `compute-ops-mgmt/server` payload (health-transition webhooks)."""
+def _normalize_server(payload: dict) -> list[CanonicalEvent]:
+    """Map a `compute-ops-mgmt/server` snapshot into one event per enabled monitor.
+
+    Evaluates each condition named in ``SERVER_MONITORS`` (default: ``health``)
+    and emits a CanonicalEvent for it — a raise when the condition is a problem,
+    a clear when it is healthy — each with its own ``correlation_key`` so
+    conditions never close one another's items.
+    """
     hw = payload.get("hardware", {}) or {}
-    health = hw.get("health", {}) or {}
     bmc = hw.get("bmc", {}) or {}
-
-    summary = health.get("summary")
-    severity = _map_health_severity(summary)
-    # Health back to OK == recovery; anything else is a problem.
-    action = ACTION_CLEAR if severity == SEVERITY_NORMAL else ACTION_RAISE
 
     part_from_id, serial_from_id = _split_asset_id(payload.get("id"))
     serial = hw.get("serialNumber") or serial_from_id
     part_number = hw.get("productId") or part_from_id
     name = payload.get("name") or serial or "server"
-
-    # One ticket per server (health aggregate) -> correlate on serial.
-    correlation_key = f"server:{serial or payload.get('id')}"
     operation = str(payload.get("operation", "Updated") or "Updated")
+    key_base = f"server:{serial or payload.get('id')}"
 
-    if action == ACTION_CLEAR:
-        title = f"Server {name} returned to healthy (health OK)"
-    else:
-        title = f"Server {name} health {summary or 'not OK'}"
+    events: list[CanonicalEvent] = []
+    for cond in _enabled_monitors():
+        res = _SERVER_CONDITIONS[cond](payload, name)
+        action = ACTION_RAISE if res.is_problem else ACTION_CLEAR
+        correlation_key = f"{key_base}:{cond}"
+        events.append(
+            CanonicalEvent(
+                event_id=str(payload.get("id", "")),
+                operation=operation,
+                title=res.title,
+                severity=res.severity,
+                resource_serial=serial,
+                resource_model=hw.get("model"),
+                mgmt_url=f"https://{bmc.get('ip')}" if bmc.get("ip") else None,
+                time_created=payload.get("updatedAt"),
+                tags=payload.get("tags", {}) or {},
+                dedup_key=_dedup(correlation_key, action, res.severity),
+                raw=payload,
+                source_type="server",
+                action=action,
+                correlation_key=correlation_key,
+                resource_name=payload.get("name"),
+                part_number=part_number,
+                description=res.description,
+                category=res.category,
+            )
+        )
+    return events
 
-    return CanonicalEvent(
-        event_id=str(payload.get("id", "")),
-        operation=operation,
-        title=title,
-        severity=severity,
-        resource_serial=serial,
-        resource_model=hw.get("model"),
-        mgmt_url=f"https://{bmc.get('ip')}" if bmc.get("ip") else None,
-        time_created=payload.get("updatedAt"),
-        tags=payload.get("tags", {}) or {},
-        dedup_key=_dedup(correlation_key, action, severity),
-        raw=payload,
-        source_type="server",
-        action=action,
-        correlation_key=correlation_key,
-        resource_name=payload.get("name"),
-        part_number=part_number,
-        description=_server_health_detail(name, summary, health),
-        category="hardware-health",
+
+# --- Server monitored conditions -----------------------------------------
+# Each monitored aspect of a server snapshot is a *condition* with its own
+# evaluator and correlation sub-key. Add a new one by writing an evaluator and
+# registering it in _SERVER_CONDITIONS — every adapter then benefits unchanged.
+
+_DEFAULT_MONITORS = ("health",)
+
+
+@dataclass
+class _CondResult:
+    """Outcome of evaluating one condition against a server snapshot."""
+
+    is_problem: bool
+    severity: str
+    title: str
+    description: str
+    category: str
+
+
+def _is_past(iso: str | None) -> bool:
+    """True if an ISO-8601 timestamp is in the past (unparseable/absent -> False)."""
+    if not iso:
+        return False
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt < datetime.now(timezone.utc)
+
+
+def _cond_health(payload: dict, name: str) -> _CondResult:
+    """Hardware health: problem when `hardware.health.summary` is not OK."""
+    health = (payload.get("hardware", {}) or {}).get("health", {}) or {}
+    summary = health.get("summary")
+    sev = _map_health_severity(summary)
+    problem = sev != SEVERITY_NORMAL
+    title = (
+        f"Server {name} health {summary or 'not OK'}"
+        if problem
+        else f"Server {name} returned to healthy (health OK)"
     )
+    return _CondResult(
+        problem,
+        sev if problem else SEVERITY_NORMAL,
+        title,
+        _server_health_detail(name, summary, health),
+        "hardware-health",
+    )
+
+
+def _cond_power(payload: dict, name: str) -> _CondResult:
+    """Power: problem when `hardware.powerState` is OFF (server powered down)."""
+    power = str((payload.get("hardware", {}) or {}).get("powerState", "") or "").upper()
+    problem = power == "OFF"
+    title = (
+        f"Server {name} is powered OFF" if problem else f"Server {name} is powered ON"
+    )
+    desc = f"Server: {name}\nPower state: {power or 'unknown'}"
+    return _CondResult(
+        problem, SEVERITY_WARNING if problem else SEVERITY_NORMAL, title, desc, "power"
+    )
+
+
+def _cond_connection(payload: dict, name: str) -> _CondResult:
+    """Connectivity: problem when `state.connected` is explicitly false."""
+    state = payload.get("state", {}) or {}
+    problem = state.get("connected") is False
+    title = (
+        f"Server {name} disconnected from COM"
+        if problem
+        else f"Server {name} connected to COM"
+    )
+    desc = f"Server: {name}\nConnected: {state.get('connected')}"
+    changed = state.get("connectedModifiedAt")
+    if changed:
+        desc += f"\nConnection changed: {changed}"
+    return _CondResult(
+        problem,
+        SEVERITY_MAJOR if problem else SEVERITY_NORMAL,
+        title,
+        desc,
+        "connectivity",
+    )
+
+
+def _cond_subscription(payload: dict, name: str) -> _CondResult:
+    """Subscription: problem when not SUBSCRIBED or the subscription has expired."""
+    state = payload.get("state", {}) or {}
+    sub = state.get("subscriptionState")
+    expires = state.get("subscriptionExpiresAt")
+    expired = _is_past(expires)
+    not_subscribed = bool(sub) and str(sub).upper() != "SUBSCRIBED"
+    problem = not_subscribed or expired
+    if problem:
+        reason = "expired" if expired else (sub or "not subscribed")
+        title = f"Server {name} subscription {str(reason).lower()}"
+    else:
+        title = f"Server {name} subscription active"
+    desc = f"Server: {name}\nSubscription: {sub or 'unknown'}"
+    if expires:
+        desc += f"\nExpires: {expires}"
+    return _CondResult(
+        problem,
+        SEVERITY_MINOR if problem else SEVERITY_NORMAL,
+        title,
+        desc,
+        "subscription",
+    )
+
+
+# Registry of server conditions: name -> evaluator. Order here is the order
+# events are emitted when multiple conditions are enabled.
+_SERVER_CONDITIONS = {
+    "health": _cond_health,
+    "power": _cond_power,
+    "connection": _cond_connection,
+    "subscription": _cond_subscription,
+}
+
+
+def _enabled_monitors() -> list[str]:
+    """Parse ``SERVER_MONITORS`` into an ordered, de-duped list of condition names.
+
+    Unset/empty -> the default (``health``). Unknown names raise ``ValueError`` so
+    a typo fails fast (consistent with how ``TARGETS`` is validated).
+    """
+    raw = os.environ.get("SERVER_MONITORS", "")
+    names = [s.strip().lower() for s in raw.split(",") if s.strip()]
+    if not names:
+        return list(_DEFAULT_MONITORS)
+    ordered: dict[str, None] = {}
+    for n in names:
+        if n not in _SERVER_CONDITIONS:
+            raise ValueError(
+                f"unknown SERVER_MONITORS entry '{n}'; "
+                f"valid: {', '.join(_SERVER_CONDITIONS)}"
+            )
+        ordered.setdefault(n, None)
+    return list(ordered)
 
 
 def _server_health_detail(name: str, summary: str | None, health: dict) -> str:

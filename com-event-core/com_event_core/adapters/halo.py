@@ -34,6 +34,7 @@ import time
 import httpx
 
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
+from com_event_core.secrets import get_secret
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.halo")
@@ -53,8 +54,8 @@ class HaloAdapter(TargetAdapter):
 
     def __init__(self) -> None:
         self._api = os.environ["HALO_API_URL"].rstrip("/")  # https://acme.haloitsm.com
-        self._client_id = os.environ["HALO_CLIENT_ID"]
-        self._client_secret = os.environ["HALO_CLIENT_SECRET"]
+        self._client_id = get_secret("HALO_CLIENT_ID")
+        self._client_secret = get_secret("HALO_CLIENT_SECRET")
         self._tenant = os.environ.get("HALO_TENANT")
         self._ticket_type = int(os.environ.get("HALO_TICKET_TYPE_ID", "1"))
         self._closed_status = int(os.environ.get("HALO_CLOSED_STATUS_ID", "9"))

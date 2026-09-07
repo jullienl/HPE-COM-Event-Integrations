@@ -6,12 +6,13 @@ for each message:
 
   1. parses + normalises the COM event into a CanonicalEvent,
   2. de-duplicates using a local SQLite TTL store,
-  3. forwards it to the selected TARGET via its adapter,
+  3. forwards it to the selected TARGETS via their adapters,
   4. acknowledges the message (complete / abandon / dead-letter).
 
 Opens only an OUTBOUND connection to the cloud queue — no inbound listener, so
-it runs safely inside a protected network. Select the target with TARGET and the
-queue with QUEUE_BACKEND; the same image serves every target and both clouds.
+it runs safely inside a protected network. Select one or more targets with
+TARGETS (comma-separated, e.g. "halo,slack") and the queue
+with QUEUE_BACKEND; the same image serves every target and both clouds.
 
 AI-generated reference implementation. Review and harden before production use.
 
@@ -23,7 +24,7 @@ Run:
 import json
 import logging
 
-from com_event_core import DedupStore, get_adapter, normalize
+from com_event_core import DedupStore, deliver_events, get_adapters, normalize
 from core.queue import get_consumer
 
 logging.basicConfig(level=logging.INFO)
@@ -31,11 +32,12 @@ log = logging.getLogger("com-event-shim")
 
 
 def main() -> None:
-    adapter = get_adapter()          # selected by TARGET; validates its config
+    adapters = get_adapters()        # selected by TARGETS; validates config
     consumer = get_consumer()        # selected by QUEUE_BACKEND; validates its config
     dedup = DedupStore()
 
-    log.info("shim starting; target=%s draining queue outbound-only", adapter.name)
+    targets = ", ".join(a.name for a in adapters)
+    log.info("shim starting; targets=%s draining queue outbound-only", targets)
 
     try:
         for msg in consumer.receive():
@@ -48,19 +50,16 @@ def main() -> None:
                 continue
 
             try:
-                event = normalize(payload)
-
-                if dedup.is_duplicate(event.dedup_key):
-                    log.info("event %s duplicate (key=%s), skipping",
-                             corr_id, event.dedup_key)
-                    consumer.complete(msg)
-                    continue
-
-                adapter.forward(event)
+                events = normalize(payload)
+                # Fan-out every derived event to every adapter. deliver_events()
+                # skips targets already done for an event and raises if any
+                # target fails, so abandon → redelivery re-attempts only the
+                # failed target(s).
+                deliver_events(events, adapters, dedup)
                 consumer.complete(msg)
 
             except Exception as e:
-                # Transient failure (target down / 5xx): abandon for redelivery.
+                # Transient failure (a target down / 5xx): abandon for redelivery.
                 log.error("event %s forward FAILED: %s; abandoning for retry",
                           corr_id, e)
                 consumer.abandon(msg)

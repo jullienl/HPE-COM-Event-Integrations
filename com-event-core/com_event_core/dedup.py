@@ -30,8 +30,13 @@ class DedupStore:
         )
         self._conn.commit()
 
-    def is_duplicate(self, dedup_key: str) -> bool:
-        """Return True if seen within the TTL window; otherwise record and return False."""
+    def already_done(self, dedup_key: str) -> bool:
+        """Return True if `dedup_key` was marked done within the TTL window.
+
+        Read-only: it does NOT record the key. Pair it with mark_done(), which is
+        called only *after* a successful delivery, so a failed-then-retried
+        delivery is re-attempted rather than suppressed.
+        """
         if self._ttl <= 0:
             return False  # dedup disabled
 
@@ -41,20 +46,24 @@ class DedupStore:
         with self._lock:
             # Purge expired keys so the store stays small.
             self._conn.execute("DELETE FROM seen WHERE seen_at < ?", (cutoff,))
-
             row = self._conn.execute(
                 "SELECT seen_at FROM seen WHERE dedup_key = ?", (dedup_key,)
             ).fetchone()
-            if row is not None:
-                self._conn.commit()
-                return True
+            self._conn.commit()
+            return row is not None
 
+    def mark_done(self, dedup_key: str) -> None:
+        """Record `dedup_key` as done (idempotent). Call only after success."""
+        if self._ttl <= 0:
+            return  # dedup disabled
+
+        now = int(time.time())
+        with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO seen (dedup_key, seen_at) VALUES (?, ?)",
                 (dedup_key, now),
             )
             self._conn.commit()
-            return False
 
     def close(self) -> None:
         with self._lock:

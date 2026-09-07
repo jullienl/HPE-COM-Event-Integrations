@@ -6,7 +6,7 @@ Folds the whole COM -> target path into ONE process:
   1. Answers the COM verification handshake (echoes the challenge token).
   2. Authenticates events via a shared-secret header (only COM knows it).
   3. Normalises the COM payload into a CanonicalEvent.
-  4. Delivers it to the selected TARGET adapter, either:
+  4. Delivers it to the selected TARGETS adapter(s), either:
        - DELIVERY_MODE=spool (default): persist to a local on-disk spool, ack COM
                                with 202 immediately, and let a background worker
                                drain + retry (survives target outages, no cloud
@@ -43,7 +43,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from com_event_core import DedupStore, get_adapter, normalize
+from com_event_core import DedupStore, deliver_events, get_adapters, get_secret, normalize
 from core.spool import SpoolFull, SpoolStore, SpoolWorker
 
 
@@ -70,7 +70,7 @@ logging.basicConfig(level=logging.INFO, handlers=[_handler], force=True)
 log = logging.getLogger("com-event-bridge")
 
 # --- Config (fail fast if anything mandatory is missing) -----------------
-COM_SECRET = os.environ["COM_SHARED_SECRET"]
+COM_SECRET = get_secret("COM_SHARED_SECRET")
 SECRET_HEADER = os.environ.get("SHARED_SECRET_HEADER", "x-shim-secret").lower()
 MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", str(256 * 1024)))  # 256 KB
 DELIVERY_MODE = os.environ.get("DELIVERY_MODE", "spool").strip().lower()  # spool | sync
@@ -94,8 +94,9 @@ if DELIVERY_MODE == "spool" and not os.environ.get("SPOOL_PATH"):
         "best-effort inline delivery (events are lost if the target is down)."
     )
 
-# Select + validate the target adapter once, at startup.
-adapter = get_adapter()
+# Select + validate the target adapter(s) once, at startup. TARGETS (comma-
+# separated) fans one event out to several targets; a single name selects one.
+adapters = get_adapters()
 dedup = DedupStore()
 
 # In spool mode, a durable buffer + background drain worker are created at startup.
@@ -108,11 +109,12 @@ async def lifespan(_: FastAPI):
     global spool, worker
     if DELIVERY_MODE == "spool":
         spool = SpoolStore()
-        worker = SpoolWorker(spool, adapter, dedup)
+        worker = SpoolWorker(spool, adapters, dedup)
         worker.start()
         log.info("started in spool mode; %s event(s) already pending", spool.pending())
     else:
-        log.info("started in sync mode; forwarding inline to target=%s", adapter.name)
+        targets = ", ".join(a.name for a in adapters)
+        log.info("started in sync mode; forwarding inline to target(s)=%s", targets)
     try:
         yield
     finally:
@@ -189,25 +191,23 @@ def _forward_sync(payload: dict, event_type: str) -> Response:
     COM is fire-and-forget and will NOT resend — the event is lost. A persistently
     down target also means repeated 5xx, and 10 consecutive webhook failures
     DISABLE the webhook in COM (stopping all delivery). Use spool mode if either
-    is unacceptable."""
-    event = normalize(payload)
-
-    if dedup.is_duplicate(event.dedup_key):
-        log.info("duplicate event; skipping",
-                 extra={"event_id": event.event_id, "status": 200, "mode": "sync"})
-        return Response(status_code=200)
+    is unacceptable. With multiple targets, each is delivered independently; a
+    target that already succeeded is not re-sent, but a failure here is not
+    retried (best-effort), so that target's copy is lost."""
+    events = normalize(payload)
+    event_id = events[0].event_id if events else "unknown"
 
     try:
-        adapter.forward(event)
+        deliver_events(events, adapters, dedup)
     except Exception:
         log.exception("forward failed; returning 503 (COM does not retry — event lost)",
-                      extra={"event_id": event.event_id, "status": 503, "mode": "sync"})
+                      extra={"event_id": event_id, "status": 503, "mode": "sync"})
         raise HTTPException(status_code=503, detail="target temporarily unavailable")
 
     log.info("event forwarded",
-             extra={"event_id": event.event_id, "event_type": event_type,
+             extra={"event_id": event_id, "event_type": event_type,
                     "status": 202, "mode": "sync"})
-    return Response(status_code=202, headers={"x-bridge-event-id": event.event_id})
+    return Response(status_code=202, headers={"x-bridge-event-id": event_id})
 
 
 def _accept_to_spool(body: bytes, event_type: str) -> Response:
