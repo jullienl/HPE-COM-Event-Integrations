@@ -177,9 +177,11 @@ inbound 443) — it ships with an nginx + certbot stack to help.
   takes you from zero to a working end-to-end pipeline.
 - **[com-event-core](com-event-core)** — the shared package used by the shim and
   the bridge: the COM event **normaliser** (`CanonicalEvent`), the **de-dup**
-  store, and all **target adapters** (`obm`, `servicenow`, `opsramp`, `halo`,
-  `splunk`, `webhook`). A mapping or adapter fix is made once here and both
-  consumers get it.
+  store, and **all target adapters** (`obm`, `servicenow`, `opsramp`, `halo`,
+  `splunk`, `github`, `slack`, `teams`, `jira`, `pagerduty`, `sentinel`,
+  `datadog`, `elastic`, `bmc_helix`, `dynatrace`, `grafana`, `webhook` — see
+  [Targets supported](#targets-supported)). A mapping or adapter fix is made once
+  here and both consumers get it.
 
 ### Which component does what
 
