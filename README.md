@@ -172,6 +172,9 @@ inbound 443) — it ships with an nginx + certbot stack to help.
   container that folds handshake + auth + transform + forward into a single
   process, with an optional on-disk spool. Ships with an nginx + certbot compose
   stack for the public TLS edge.
+  **Start here:** the step-by-step
+  [on-prem deployment runbook](com-event-bridge/docs/Deploy-End-to-End-On-Prem.md)
+  takes you from zero to a working end-to-end pipeline.
 - **[com-event-core](com-event-core)** — the shared package used by the shim and
   the bridge: the COM event **normaliser** (`CanonicalEvent`), the **de-dup**
   store, and all **target adapters** (`obm`, `servicenow`, `opsramp`, `halo`,
@@ -414,19 +417,16 @@ package is installed into the shim/bridge images from local source.
 
 ### End-to-end deployment runbooks
 
-**The fastest way to use this project.** These runbooks walk you through every
-step — provisioning the cloud queue, deploying the relay, creating the COM
-webhooks (raise **and** clear), and running the on-prem shim — to get a working
-COM → target pipeline from scratch:
+**The fastest way to use this project.** Each runbook walks you through every
+step — standing up the receiver, creating the COM webhooks (raise **and** clear),
+and delivering to a target — to get a working COM → target pipeline from scratch:
 
 - **[Deploy the relay on Azure + run the on-prem shim](com-event-relay/docs/Deploy-End-to-End-to-Azure.md)** —
   Azure Container Apps + Service Bus, end to end.
 - **[Deploy the relay on AWS + run the on-prem shim](com-event-relay/docs/Deploy-End-to-End-to-AWS.md)** —
   AWS App Runner + SQS, end to end.
-
-> An equivalent single-box runbook for **[com-event-bridge](com-event-bridge)**
-> is planned (see [Roadmap](#roadmap)); until then, the
-> [bridge README](com-event-bridge/README.md) covers its setup.
+- **[Deploy the single-box bridge on-prem](com-event-bridge/docs/Deploy-End-to-End-On-Prem.md)** —
+  one container + nginx/certbot TLS edge, no cloud, end to end.
 
 ### Reference
 
@@ -458,9 +458,6 @@ the relay's shim and the bridge inherit them together):
   [Targets supported](#targets-supported)).
 - **More target adapters** — each is a small `CanonicalEvent` → target mapping in
   `com-event-core`; contributions welcome.
-- **End-to-end deployment runbook for the bridge** — an on-prem single-box
-  equivalent of the [Azure](com-event-relay/docs/Deploy-End-to-End-to-Azure.md) /
-  [AWS](com-event-relay/docs/Deploy-End-to-End-to-AWS.md) relay runbooks.
 - **Deploy scripts for the shim** (Azure Container Instances / AWS ECS) and a
   systemd unit for bare on-prem hosts.
 - **Bicep / CloudFormation templates** + "Deploy to Azure" / one-click AWS.

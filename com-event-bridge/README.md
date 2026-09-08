@@ -97,7 +97,6 @@ restart.
 Unlike com-event-relay — where the cloud platform provides the public URL, TLS,
 patching and autoscaling — **the bridge is the internet-facing endpoint**, so you
 operate:
-
 - a **public DNS name** and **inbound `443`** open to COM's egress;
 - a **TLS reverse proxy** in front (nginx/Caddy) as the certificate terminator —
   see [deploy/nginx](deploy/nginx/com-event-bridge.conf);
@@ -108,6 +107,12 @@ operate:
 - host hardening, patching, and (if you need it) HA — see [HARDENING.md](HARDENING.md).
 
 ## Quick start
+
+> **Full end-to-end runbook:** for a complete walk-through — DNS + TLS/cert
+> bootstrap, wiring the COM webhook (raise **and** clear), and an end-to-end
+> GitHub Issues test — see
+> [docs/Deploy-End-to-End-On-Prem.md](docs/Deploy-End-to-End-On-Prem.md). The
+> quick start below is the condensed version.
 
 ### Run locally (sync mode)
 
