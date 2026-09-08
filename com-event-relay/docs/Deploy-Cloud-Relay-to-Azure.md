@@ -29,10 +29,16 @@ COM ──webhook──►  [ RELAY on Azure Container Apps ]──►  Azure Se
 
 ## 0. Prerequisites
 
+- **This repo cloned locally** (both the script and the synthetic-event test in
+  step 6 use files from it):
+  ```powershell
+  git clone https://github.com/jullienl/HPE-COM-Event-Integrations.git
+  cd HPE-COM-Event-Integrations
+  ```
 - **Azure CLI** logged in to the target subscription:
   ```powershell
   az login
-  az account set --subscription "<your-subscription-id-or-name>"
+  az account set --subscription "<your-subscription-id-or-name>"   # Use az account list --output table --refresh to see your subscriptions
   az account show --query "{sub:name, id:id}" -o table
   ```
 - **Azure CLI Container Apps extension** (installed automatically below, but you can pre-add it):
@@ -50,7 +56,16 @@ COM ──webhook──►  [ RELAY on Azure Container Apps ]──►  Azure Se
 
 ---
 
-## 1. Prepare the GitHub target
+## 1. Prepare the target application
+
+This runbook uses **GitHub Issues** as the example target, so the steps below
+create a repository and a token for it. **Any other target** (ServiceNow, Slack,
+Jira, a generic webhook, …) works the same way — only the credential differs:
+follow **that application's own documentation** to generate the API token / key /
+webhook URL it needs, then pass it to the shim via that adapter's env vars (see
+[shim/.env.example](../shim/.env.example) for every adapter's variables).
+
+For the GitHub example:
 
 1. Create (or pick) a repository, e.g. `your-org/com-lab-issues`.
 2. Create a **fine-grained PAT**: GitHub → *Settings → Developer settings →
@@ -58,7 +73,7 @@ COM ──webhook──►  [ RELAY on Azure Container Apps ]──►  Azure Se
    - **Repository access:** *Only select repositories* → pick your repo.
    - **Permissions → Repository permissions → Issues: Read and write.**
    - (Classic PAT alternative: the `repo` scope also works.)
-3. Copy the token — you'll pass it to the **shim** later as `GITHUB_TOKEN`
+3. Copy the token — you'll pass it to the **shim** later (step 5) as `GITHUB_TOKEN`
    (nothing GitHub-related is configured on the relay; the relay never talks to GitHub).
 
 The GitHub adapter reads: `GITHUB_REPO` (required, `owner/repo`), `GITHUB_TOKEN`
@@ -67,68 +82,111 @@ The GitHub adapter reads: `GITHUB_REPO` (required, `owner/repo`), `GITHUB_TOKEN`
 
 ---
 
-## 2. Set your working variables (PowerShell)
+## 2. Choose how to deploy the relay
 
-Run these in the `pwsh` terminal; later steps reuse them.
+With the prerequisites done and your target credential in hand, provision the
+relay + queue **one of two ways**. The COM/target wiring afterwards
+(steps 3–6) is identical either way.
+
+### Option A — Scripted (fastest)
+
+The relay + queue provisioning is scripted in
+[deploy/azure/deploy-relay-azure.sh](../deploy/azure/deploy-relay-azure.sh). From
+**Azure Cloud Shell** (bash) or **WSL/Git Bash** on Windows, in your clone:
+
+```bash
+cd com-event-relay/deploy/azure
+
+# Run it (override any default via env vars on the same line)
+RG=rg-com-relay LOC=westeurope bash deploy-relay-azure.sh
+```
+
+It prints the **Webhook URL** and the generated **shared secret** at the end —
+copy both (you'll need them for COM in step 4). It creates only the **send**
+policy, so add the `shim-listen` rule (Option B, step 2) before running the shim, then
+**skip to step 3 (verify)**.
+
+### Option B — Manual walkthrough (recommended for a first deploy)
+
+#### 1 - Set the variables
+
+First set the working variables you'll reuse throughout — run these in a
+**PowerShell** terminal (locally, or the **PowerShell** option in Azure Cloud Shell):
 
 ```powershell
-$RG      = "rg-com-relay"
-$LOC     = "westeurope"
-$SB_NS   = "sbcomrelay$([System.Random]::new().Next(10000,99999))"   # must be globally unique
-$QUEUE   = "com-events"
-$ACA_ENV = "aca-com-relay"
-$APP     = "com-event-relay"
-$IMAGE   = "ghcr.io/jullienl/com-event-relay:latest"
-$HDR     = "x-shim-secret"                                            # shared-secret header name
+$RG      = "rg-com-relay"                                            # Azure resource group that holds every resource below
+$LOC     = "westeurope"                                              # Azure region to deploy into (override if you prefer another)
+$SB_NS   = "sbcomrelay$([System.Random]::new().Next(10000,99999))"   # Service Bus namespace name — must be GLOBALLY unique (random suffix)
+$QUEUE   = "com-events"                                              # Service Bus queue name; the relay and shim must both use this value
+$ACA_ENV = "aca-com-relay"                                           # Container Apps environment (the shared host for the relay app)
+$APP     = "com-event-relay"                                         # Container App name for the relay
+$IMAGE   = "ghcr.io/jullienl/com-event-relay:latest"                 # relay container image pulled by Azure (published by CI to GHCR)
+$HDR     = "x-shim-secret"                                           # HTTP header COM sends carrying the shared secret (auth on every POST)
 
 # 32-byte (64 hex char) shared secret, no openssl needed on Windows:
 $SECRET  = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
 $SECRET   # copy this — COM will send it on every POST
 ```
 
-> Keep `$SECRET` safe. You'll paste it into the COM webhook definition in step 6.
+> Keep `$SECRET` safe. You'll paste it into the COM webhook definition in step 4.
 
----
+Then run the two sub-steps below, then continue to **step 3 (verify)**.
 
-## 3. Create the Service Bus queue + two least-privilege policies
+#### 2. Create the Service Bus queue + two least-privilege policies
 
 The relay publishes with a **Send**-only key; the shim consumes with a
 **Listen**-only key. Two separate keys = least privilege on each end.
 
 ```powershell
+# Resource group — the container for every resource created below
 az group create --name $RG --location $LOC -o none
 
+# Service Bus namespace (Standard SKU — queues need Standard, not Basic)
 az servicebus namespace create --resource-group $RG --name $SB_NS `
   --location $LOC --sku Standard -o none
 
+# The queue itself — the durable buffer between relay (send) and shim (receive)
 az servicebus queue create --resource-group $RG --namespace-name $SB_NS `
   --name $QUEUE -o none
 
-# Relay: SEND-only
+# Relay: SEND-only authorization rule (the relay may only enqueue, not read)
 az servicebus queue authorization-rule create --resource-group $RG `
   --namespace-name $SB_NS --queue-name $QUEUE --name relay-send --rights Send -o none
 
-# Shim: LISTEN-only
+# Shim: LISTEN-only authorization rule (the shim may only receive, not enqueue)
 az servicebus queue authorization-rule create --resource-group $RG `
   --namespace-name $SB_NS --queue-name $QUEUE --name shim-listen --rights Listen -o none
 
-# Grab both connection strings
+# Grab both connection strings (each carries its own scoped key)
+# relay's send-only connection string -> relay app
 $SB_SEND = az servicebus queue authorization-rule keys list --resource-group $RG `
   --namespace-name $SB_NS --queue-name $QUEUE --name relay-send `
   --query primaryConnectionString -o tsv
 
+# shim's listen-only connection string -> shim container
 $SB_LISTEN = az servicebus queue authorization-rule keys list --resource-group $RG `
   --namespace-name $SB_NS --queue-name $QUEUE --name shim-listen `
   --query primaryConnectionString -o tsv
 ```
 
----
-
-## 4. Deploy the relay to Azure Container Apps
+#### 3. Deploy the relay to Azure Container Apps
 
 ```powershell
+# Container Apps environment — the shared, managed host the relay app runs in.
+# NOTE: this first run is SLOW (~2-5 min): Azure provisions the underlying
+# managed Kubernetes control plane + a Log Analytics workspace + networking.
+# It's a one-time setup and not hung — please be patient and let it finish.
 az containerapp env create --resource-group $RG --name $ACA_ENV --location $LOC -o none
 
+# Create the relay app and wire its config in one call:
+#   --image                : relay image pulled from GHCR (set above)
+#   --ingress/--target-port: public HTTPS in, forwarded to the app's port 8080
+#   --min/--max-replicas   : keep >=1 warm (COM never retries); scale up to 3 under load
+#   --secrets              : store the SB send-string + shared secret as named secrets
+#   secretref:<name>       : env var resolves from a named secret above (not stored inline)
+#   QUEUE_BACKEND          : tell the relay to publish to Azure Service Bus
+#   SHARED_SECRET_HEADER   : header name the relay checks on each POST
+#   QUEUE_NAME             : queue to publish to (must match the shim)
 az containerapp create `
   --resource-group $RG --name $APP --environment $ACA_ENV `
   --image $IMAGE `
@@ -143,11 +201,12 @@ az containerapp create `
     "QUEUE_NAME=$QUEUE" `
   -o none
 
+# Fetch the public hostname Azure assigned to the app
 $FQDN = az containerapp show --resource-group $RG --name $APP `
   --query properties.configuration.ingress.fqdn -o tsv
 
-"Webhook URL : https://$FQDN/com/webhook"
-"Secret hdr  : $HDR = $SECRET"
+"Webhook URL : https://$FQDN/com/webhook"   # give this URL to COM (step 4)
+"Secret hdr  : $HDR = $SECRET"               # COM sends this header/value on every POST
 ```
 
 > **`--min-replicas 1` is deliberate.** COM sends **one POST per event and never
@@ -155,23 +214,38 @@ $FQDN = az containerapp show --resource-group $RG --name $APP `
 > delivery. Keeping one warm replica means the handshake and every event are
 > always answered fast.
 
-**Private image?** `ghcr.io/jullienl/...` packages are public by default. If yours
-is private, add registry credentials to the `create` call:
-```powershell
-  --registry-server ghcr.io `
-  --registry-username <your-github-username> `
-  --registry-password <a-PAT-with-read:packages>
-```
+> **Which image?** This runbook uses the project's prebuilt relay image
+> `ghcr.io/jullienl/com-event-relay:latest` — it's public and already contains
+> everything (handshake, secret check, queue publisher), so **just use it**; that's
+> the whole point. You only need your own image if you've forked and changed the
+> relay code. In that case, if your fork's package is **private**, add registry
+> credentials to the `create` call so Azure can pull it:
+> ```powershell
+>   --registry-server ghcr.io `
+>   --registry-username <your-github-username> `
+>   --registry-password <a-PAT-with-read:packages>
+> ```
 
-**Shortcut (bash):** the same provisioning is scripted in
-[deploy/azure/deploy-relay-azure.sh](../deploy/azure/deploy-relay-azure.sh) — run it
-from Azure Cloud Shell or WSL/Git Bash (`RG=... LOC=... ./deploy-relay-azure.sh`).
-It creates only the **send** policy, so you'd still run the `shim-listen` command
-from step 3 afterwards.
+**Shortcut (bash):** prefer not to run these steps by hand? Use the
+[deploy-relay-azure.sh](../deploy/azure/deploy-relay-azure.sh) script from
+[Option A](#option-a--scripted-fastest) in step 2.
 
 ---
 
-## 5. Verify the relay before wiring COM
+## 3. Verify the relay before wiring COM
+
+Run these from the **same PowerShell terminal** you used in step 2 — they reuse
+`$FQDN`, `$HDR` and `$SECRET` from there. If you deployed via **Option A** (the
+script) or opened a fresh terminal, set them first from the values the script /
+step 2 printed:
+
+```powershell
+$FQDN   = "<the FQDN from step 2>"          # e.g. com-event-relay.xxxx.westeurope.azurecontainerapps.io
+$HDR    = "x-shim-secret"                   # the header name COM sends
+$SECRET = "<the shared secret from step 2>" # the 64-hex secret printed at deploy time
+```
+
+
 
 **Liveness / readiness** (readiness returns `503` until the queue is reachable):
 
@@ -179,6 +253,10 @@ from step 3 afterwards.
 curl.exe -s "https://$FQDN/healthz"
 curl.exe -s "https://$FQDN/readyz"
 ```
+  > **`curl.exe` vs `curl`:** the commands above use `curl.exe`, which is correct on
+  > **Windows PowerShell** (there plain `curl` is an alias for `Invoke-WebRequest`).
+  > In **Azure Cloud Shell** the shell runs on **Linux**, so use plain **`curl`**
+  > (drop the `.exe`) — `curl.exe` won't be found there.
 
 **Handshake** — COM proves it owns the endpoint via a `GET` with a challenge
 header; the relay echoes it back as `{"verification": "<token>"}`:
@@ -207,18 +285,18 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 
 ---
 
-## 6. Configure the COM webhook
+## 4. Configure the COM webhook
 
 In the HPE GreenLake / Compute Ops Management console, create a webhook:
 
-- **Destination URL:** `https://<FQDN>/com/webhook`  (from step 4)
+- **Destination URL:** `https://<FQDN>/com/webhook`  (from step 2)
 - **Custom header:** name `x-shim-secret` (your `$HDR`), value = `$SECRET`.
   COM authenticates with a **static header only** — this is that header.
 - **Event filter (`eventFilter`):** scope it to servers so the lab stays quiet,
   e.g. server health changes. Filtering happens **server-side at COM**; the relay
   forwards whatever COM sends.
 
-COM will first call `GET` (the handshake in step 5) and only enable the webhook
+COM will first call `GET` (the handshake in step 3) and only enable the webhook
 once it echoes the challenge over public HTTPS with a valid certificate — ACA
 provides that TLS automatically.
 
@@ -229,10 +307,10 @@ provides that TLS automatically.
 
 ---
 
-## 7. Run the shim (drains the queue → GitHub)
+## 5. Run the shim (drains the queue → GitHub)
 
 Run this on any machine with **outbound** internet (your laptop is fine for the
-test). It needs the **listen** connection string from step 3 and your GitHub
+test). It needs the **listen** connection string from step 2 and your GitHub
 details. Nothing inbound is opened.
 
 ```powershell
@@ -268,7 +346,7 @@ result. Leave it running for the end-to-end test.
 
 ---
 
-## 8. End-to-end test
+## 6. End-to-end test
 
 **Path A — real COM event.** Trigger (or wait for) a server health change that
 matches your `eventFilter`. Within a few seconds you should see:
@@ -308,11 +386,11 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 
 ---
 
-## 9. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| COM won't enable the webhook | Handshake failed | Confirm `GET /com/webhook` echoes the challenge over **public HTTPS** with a valid cert (step 5). Check the URL has no typo and ends in `/com/webhook`. |
+| COM won't enable the webhook | Handshake failed | Confirm `GET /com/webhook` echoes the challenge over **public HTTPS** with a valid cert (step 3). Check the URL has no typo and ends in `/com/webhook`. |
 | Relay returns `401` | Wrong/missing header | Header **name** must equal `SHARED_SECRET_HEADER` (`x-shim-secret`) and value must equal `$SECRET`. |
 | Relay returns `413` | Body too large | Raise `MAX_BODY_BYTES` on the relay app if you genuinely send large payloads. |
 | Relay returns `503` | Queue unreachable | Check the **send** connection string secret and that the namespace/queue exist; `GET /readyz` should be `200`. |
@@ -335,7 +413,7 @@ az servicebus queue show --resource-group $RG --namespace-name $SB_NS `
 
 ---
 
-## 10. Tear down
+## 8. Tear down
 
 ```powershell
 docker rm -f com-event-shim 2>$null

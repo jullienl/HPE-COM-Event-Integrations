@@ -43,13 +43,19 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
 
 ## 0. Prerequisites
 
+- **This repo cloned locally** (both the script and the synthetic-event test in
+  step 6 use files from it):
+  ```powershell
+  git clone https://github.com/jullienl/HPE-COM-Event-Integrations.git
+  cd HPE-COM-Event-Integrations
+  ```
 - **AWS CLI v2** configured for the target account:
   ```powershell
   aws configure          # or: aws sso login
   aws sts get-caller-identity --query "{acct:Account, arn:Arn}" --output table
   ```
 - Permission to create **SQS queues**, **IAM roles/users**, and an **ECR repository** (admin or equivalent).
-- **Docker** (with Buildx — bundled with Docker Desktop) on the machine you run this from: it's needed to **mirror the relay image into ECR** (step 5.1) and to run the **shim**.
+- **Docker** (with Buildx — bundled with Docker Desktop) on the machine you run this from: it's needed to **mirror the relay image into ECR** (step 3.1) and to run the **shim**.
 - A **GitHub repository** you can create issues in (a throwaway repo is ideal).
 - Rights to create a **GitHub Personal Access Token** (see step 1).
 - Access to configure a **COM webhook** in the HPE GreenLake / Compute Ops Management console.
@@ -58,7 +64,16 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
 
 ---
 
-## 1. Prepare the GitHub target
+## 1. Prepare the target application
+
+This runbook uses **GitHub Issues** as the example target, so the steps below
+create a repository and a token for it. **Any other target** (ServiceNow, Slack,
+Jira, a generic webhook, …) works the same way — only the credential differs:
+follow **that application's own documentation** to generate the API token / key /
+webhook URL it needs, then pass it to the shim via that adapter's env vars (see
+[shim/.env.example](../shim/.env.example) for every adapter's variables).
+
+For the GitHub example:
 
 1. Create (or pick) a repository, e.g. `your-org/com-lab-issues`.
 2. Create a **fine-grained PAT**: GitHub → *Settings → Developer settings →
@@ -66,7 +81,7 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
    - **Repository access:** *Only select repositories* → pick your repo.
    - **Permissions → Repository permissions → Issues: Read and write.**
    - (Classic PAT alternative: the `repo` scope also works.)
-3. Copy the token — you'll pass it to the **shim** later as `GITHUB_TOKEN`
+3. Copy the token — you'll pass it to the **shim** later (step 5) as `GITHUB_TOKEN`
    (nothing GitHub-related is configured on the relay; the relay never talks to GitHub).
 
 The GitHub adapter reads: `GITHUB_REPO` (required, `owner/repo`), `GITHUB_TOKEN`
@@ -75,68 +90,106 @@ The GitHub adapter reads: `GITHUB_REPO` (required, `owner/repo`), `GITHUB_TOKEN`
 
 ---
 
-## 2. Set your working variables (PowerShell)
+## 2. Set your working variables, then choose how to deploy
 
-Run these in the `pwsh` terminal; later steps reuse them.
+First set the variables every later step **and** the deploy script reuse — run
+these in a **PowerShell** terminal (locally, or the **PowerShell** option in AWS CloudShell):
 
 ```powershell
-$REGION = "eu-west-1"
-$QUEUE  = "com-events"
-$APP    = "com-event-relay"
-$HDR    = "x-shim-secret"                                             # shared-secret header name
+$REGION = "eu-west-1"                                                # AWS region to deploy into (App Runner isn't in every region — check first)
+$QUEUE  = "com-events"                                               # SQS queue name; the relay and shim must both use this value
+$APP    = "com-event-relay"                                          # App Runner service name for the relay
+$HDR    = "x-shim-secret"                                            # HTTP header COM sends carrying the shared secret (auth on every POST)
 
-$ACCOUNT    = aws sts get-caller-identity --query Account --output text
-$GHCR_IMAGE = "ghcr.io/jullienl/com-event-relay:latest"               # upstream, published by CI
-$ECR_REPO   = "com-event-relay"                                       # your private ECR repo (created in step 5)
-$IMAGE      = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:latest"   # App Runner pulls this
+$ACCOUNT    = aws sts get-caller-identity --query Account --output text                    # your 12-digit AWS account ID
+$GHCR_IMAGE = "ghcr.io/jullienl/com-event-relay:latest"               # upstream image published by CI (App Runner can't pull this directly)
+$ECR_REPO   = "com-event-relay"                                       # your private ECR repo name (created in step 3.1)
+$IMAGE      = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:latest"   # the ECR image App Runner actually pulls (mirror target)
 
 # 32-byte (64 hex char) shared secret, no openssl needed on Windows:
 $SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
 $SECRET   # copy this — COM will send it on every POST
 ```
 
-> Keep `$SECRET` safe. You'll paste it into the COM webhook definition in step 7.
+> Keep `$SECRET` safe. You'll paste it into the COM webhook definition in step 4.
 
----
+Now provision the relay **one of two ways** — the COM/target wiring afterwards
+(steps 3–6) is identical either way:
 
-## 3. Create the SQS queue (+ an optional dead-letter queue)
+### Option A — Scripted (fastest)
+
+The script mirrors the image + creates the queue + service, but **not** the IAM
+roles. So first create those two roles from **Option B** below —
+**step 2 (instance role)** and **step 3.2 (ECR access role)**. The instance-role
+policy asks for `$QUEUE_ARN`; the script creates the queue itself, so use its
+predictable ARN:
 
 ```powershell
-# Main queue
+$QUEUE_ARN = "arn:aws:sqs:${REGION}:${ACCOUNT}:${QUEUE}"   # queue doesn't exist yet — the script creates it
+```
+
+Then from **AWS CloudShell** or **WSL/Git Bash** on Windows, in your clone:
+
+```bash
+cd com-event-relay/deploy/aws
+
+# Run it — pass your ECR image URI + the two role ARNs (Option B steps 2 and 3.2)
+IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:latest \
+INSTANCE_ROLE_ARN=<role-from-Option-B-step-2> \
+ACCESS_ROLE_ARN=<role-from-Option-B-step-3.2> \
+AWS_REGION=eu-west-1 \
+bash deploy-relay-aws.sh
+```
+
+It needs **Docker** running (for the mirror) and does **not** create a DLQ — add
+Option B step 1's redrive policy if you want one. It prints the **Webhook URL** and
+generated **shared secret** at the end (copy both for COM in step 4). Then jump to
+**step 3 (verify)**.
+
+### Option B — Manual walkthrough (recommended for a first deploy)
+
+Run the sub-steps below by hand to understand each resource, then continue to
+**step 3 (verify)**.
+
+#### 1. Create the SQS queue (+ an optional dead-letter queue)
+
+```powershell
+# Main queue — the durable buffer between relay (send) and shim (receive)
 $QUEUE_URL = aws sqs create-queue --queue-name $QUEUE --region $REGION `
   --query QueueUrl --output text
 
 # (Recommended) a dead-letter queue for poison messages, wired via a redrive policy
 $DLQ_URL = aws sqs create-queue --queue-name "$QUEUE-dlq" --region $REGION `
   --query QueueUrl --output text
+# The DLQ's ARN — SQS identifies the redrive target by ARN, not URL
 $DLQ_ARN = aws sqs get-queue-attributes --queue-url $DLQ_URL `
   --attribute-names QueueArn --region $REGION --query "Attributes.QueueArn" --output text
 
+# Redrive policy: after maxReceiveCount failed receives, move the message to the DLQ
 $redrive = (@{ deadLetterTargetArn = $DLQ_ARN; maxReceiveCount = "5" } | ConvertTo-Json -Compress)
+# Attach the redrive policy to the main queue
 aws sqs set-queue-attributes --queue-url $QUEUE_URL --region $REGION `
   --attributes "RedrivePolicy=$redrive"
 
-# Capture the main queue's ARN for the IAM policies below
+# Capture the main queue's ARN — the IAM policies below scope permissions to this exact queue
 $QUEUE_ARN = aws sqs get-queue-attributes --queue-url $QUEUE_URL `
   --attribute-names QueueArn --region $REGION --query "Attributes.QueueArn" --output text
 
-"Queue URL : $QUEUE_URL"
-"Queue ARN : $QUEUE_ARN"
+"Queue URL : $QUEUE_URL"   # used by relay/shim as SQS_QUEUE_URL (the endpoint to send/receive)
+"Queue ARN : $QUEUE_ARN"   # used in the IAM role policies (which resource the role may act on)
 ```
 
 > The shim maps malformed JSON to `dead_letter`, and SQS moves a message to the
 > DLQ after `maxReceiveCount` failed receives. Without a redrive policy those
 > messages are dropped instead of captured — hence the DLQ above.
 
----
-
-## 4. Create the IAM instance role for the relay (send-only)
+#### 2. Create the IAM instance role for the relay (send-only)
 
 App Runner runs the relay **as** this role; it grants only `sqs:SendMessage` (plus
 a cheap `GetQueueAttributes` used by `/readyz`).
 
 ```powershell
-# Trust policy: App Runner tasks may assume this role
+# Trust policy: who may assume this role — here, App Runner's task runtime
 @'
 {
   "Version": "2012-10-17",
@@ -148,10 +201,11 @@ a cheap `GetQueueAttributes` used by `/readyz`).
 }
 '@ | Set-Content -Encoding ascii apprunner-trust.json
 
+# Create the (empty) role with that trust policy
 aws iam create-role --role-name com-relay-apprunner `
   --assume-role-policy-document file://apprunner-trust.json | Out-Null
 
-# Permissions: send to the one queue only
+# Permissions policy: allow send + a cheap attribute read, on THIS queue only
 @"
 {
   "Version": "2012-10-17",
@@ -163,18 +217,18 @@ aws iam create-role --role-name com-relay-apprunner `
 }
 "@ | Set-Content -Encoding ascii apprunner-send.json
 
+# Attach the permissions policy to the role (inline policy named 'sqs-send')
 aws iam put-role-policy --role-name com-relay-apprunner `
   --policy-name sqs-send --policy-document file://apprunner-send.json
 
+# Capture the role ARN — passed as InstanceRoleArn when creating the service (step 3.3)
 $ROLE_ARN = aws iam get-role --role-name com-relay-apprunner --query Role.Arn --output text
 "Instance role ARN : $ROLE_ARN"
 ```
 
----
+#### 3. Deploy the relay to App Runner
 
-## 5. Deploy the relay to App Runner
-
-### 5.1 Mirror the published image into your private ECR
+##### 3.1 Mirror the published image into your private ECR
 
 App Runner can pull only from ECR / ECR Public (never GHCR), so copy the
 CI-published GHCR image into a private ECR repo in your account. `buildx
@@ -193,12 +247,13 @@ aws ecr get-login-password --region $REGION | `
 docker buildx imagetools create --tag $IMAGE $GHCR_IMAGE
 ```
 
-### 5.2 Create the App Runner ECR access role
+##### 3.2 Create the App Runner ECR access role
 
 App Runner assumes this role to **pull** from your private ECR (distinct from the
-instance role in step 4, which the running relay uses to send to SQS):
+instance role in step 2, which the running relay uses to send to SQS):
 
 ```powershell
+# Trust policy: App Runner's BUILD/pull runtime may assume this role (note: build.apprunner, not tasks.apprunner)
 @'
 {
   "Version": "2012-10-17",
@@ -210,17 +265,20 @@ instance role in step 4, which the running relay uses to send to SQS):
 }
 '@ | Set-Content -Encoding ascii apprunner-ecr-trust.json
 
+# Create the role with that trust policy
 aws iam create-role --role-name com-relay-ecr-access `
   --assume-role-policy-document file://apprunner-ecr-trust.json 2>$null | Out-Null
 
+# Attach the AWS-managed policy that grants ECR pull permissions
 aws iam attach-role-policy --role-name com-relay-ecr-access `
   --policy-arn arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
 
+# Capture the role ARN — passed as AccessRoleArn in the source config (step 3.3)
 $ACCESS_ROLE_ARN = aws iam get-role --role-name com-relay-ecr-access --query Role.Arn --output text
 "ECR access role ARN : $ACCESS_ROLE_ARN"
 ```
 
-### 5.3 Create the App Runner service
+##### 3.3 Create the App Runner service
 
 ```powershell
 # Source configuration: private ECR image + access role + env vars (the relay reads these)
@@ -245,6 +303,10 @@ $ACCESS_ROLE_ARN = aws iam get-role --role-name com-relay-ecr-access --query Rol
 }
 "@ | Set-Content -Encoding ascii apprunner-src.json
 
+# Create the App Runner service:
+#   --source-configuration : the image + env config written above
+#   --instance-configuration: role the RUNNING relay uses (SQS send, from step 2)
+#   --health-check         : App Runner probes /healthz to decide the service is healthy
 $SERVICE_ARN = aws apprunner create-service `
   --service-name $APP --region $REGION `
   --source-configuration file://apprunner-src.json `
@@ -255,11 +317,12 @@ $SERVICE_ARN = aws apprunner create-service `
 # Wait until it's RUNNING (a few minutes)
 aws apprunner wait service-running --service-arn $SERVICE_ARN --region $REGION
 
+# Fetch the public hostname App Runner assigned to the service
 $FQDN = aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGION `
   --query Service.ServiceUrl --output text
 
-"Webhook URL : https://$FQDN/com/webhook"
-"Secret hdr  : $HDR = $SECRET"
+"Webhook URL : https://$FQDN/com/webhook"   # give this URL to COM (step 4)
+"Secret hdr  : $HDR = $SECRET"               # COM sends this header/value on every POST
 ```
 
 > App Runner keeps **at least one provisioned instance** and terminates TLS for
@@ -267,20 +330,33 @@ $FQDN = aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGI
 > scale-to-zero cold-start to worry about.
 
 **Updating the relay later.** When CI publishes a new GHCR image, re-run the
-mirror (5.1) to copy `:latest` into ECR, then trigger a fresh App Runner
+mirror (step 3.1) to copy `:latest` into ECR, then trigger a fresh App Runner
 deployment:
 `aws apprunner start-deployment --service-arn $SERVICE_ARN --region $REGION`.
 
-**Shortcut (bash):** the same provisioning is scripted in
-[deploy/aws/deploy-relay-aws.sh](../deploy/aws/deploy-relay-aws.sh) — run it from
-WSL/Git Bash (it needs Docker for the mirror) with
-`IMAGE=<ecr-uri> ACCESS_ROLE_ARN=<role> INSTANCE_ROLE_ARN=<role> AWS_REGION=... ./deploy-relay-aws.sh`.
-It mirrors the image + creates the queue + service, but assumes you already made
-the instance role (step 4) and does **not** create a DLQ.
+**Shortcut (bash):** prefer not to run these steps by hand? Use the
+[deploy-relay-aws.sh](../deploy/aws/deploy-relay-aws.sh) script from
+[Option A](#option-a--scripted-fastest) in step 2.
 
 ---
 
-## 6. Verify the relay before wiring COM
+## 3. Verify the relay before wiring COM
+
+Run these from the **same PowerShell terminal** you used in step 2 — they reuse
+`$FQDN`, `$HDR` and `$SECRET` from there. If you deployed via **Option A** (the
+script) or opened a fresh terminal, set them first from the values the script /
+step 2 printed:
+
+```powershell
+$FQDN   = "<the App Runner URL host from step 2>"  # e.g. xxxxxxxx.eu-west-1.awsapprunner.com
+$HDR    = "x-shim-secret"                          # the header name COM sends
+$SECRET = "<the shared secret from step 2>"        # the 64-hex secret printed at deploy time
+```
+
+> **`curl.exe` vs `curl`:** the commands below use `curl.exe`, which is correct on
+> **Windows PowerShell** (there plain `curl` is an alias for `Invoke-WebRequest`).
+> In **AWS CloudShell** the shell runs on **Linux**, so use plain **`curl`**
+> (drop the `.exe`) — `curl.exe` won't be found there.
 
 **Liveness / readiness** (readiness returns `503` until the queue is reachable):
 
@@ -316,18 +392,18 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 
 ---
 
-## 7. Configure the COM webhook
+## 4. Configure the COM webhook
 
 In the HPE GreenLake / Compute Ops Management console, create a webhook:
 
-- **Destination URL:** `https://<FQDN>/com/webhook`  (from step 5)
+- **Destination URL:** `https://<FQDN>/com/webhook`  (from step 2)
 - **Custom header:** name `x-shim-secret` (your `$HDR`), value = `$SECRET`.
   COM authenticates with a **static header only** — this is that header.
 - **Event filter (`eventFilter`):** scope it to servers so the lab stays quiet,
   e.g. server health changes. Filtering happens **server-side at COM**; the relay
   forwards whatever COM sends.
 
-COM will first call `GET` (the handshake in step 6) and only enable the webhook
+COM will first call `GET` (the handshake in step 3) and only enable the webhook
 once it echoes the challenge over public HTTPS with a valid certificate — App
 Runner provides that TLS automatically.
 
@@ -338,7 +414,7 @@ Runner provides that TLS automatically.
 
 ---
 
-## 8. Create the shim's IAM identity (receive-only) and run it
+## 5. Create the shim's IAM identity (receive-only) and run it
 
 The shim uses the **default boto3 credential chain**. On ECS/EC2 give it a
 **task/instance role**; for a laptop test, create a small **IAM user** limited to
@@ -414,7 +490,7 @@ result. Leave it running for the end-to-end test.
 
 ---
 
-## 9. End-to-end test
+## 6. End-to-end test
 
 **Path A — real COM event.** Trigger (or wait for) a server health change that
 matches your `eventFilter`. Within a few seconds you should see:
@@ -449,11 +525,11 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 
 ---
 
-## 10. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| COM won't enable the webhook | Handshake failed | Confirm `GET /com/webhook` echoes the challenge over **public HTTPS** (step 6). Check the URL has no typo and ends in `/com/webhook`. |
+| COM won't enable the webhook | Handshake failed | Confirm `GET /com/webhook` echoes the challenge over **public HTTPS** (step 3). Check the URL has no typo and ends in `/com/webhook`. |
 | Relay returns `401` | Wrong/missing header | Header **name** must equal `SHARED_SECRET_HEADER` (`x-shim-secret`) and value must equal `$SECRET`. |
 | Relay returns `413` | Body too large | Raise `MAX_BODY_BYTES` on the relay service if you genuinely send large payloads. |
 | Relay returns `503` / `/readyz` fails | Queue unreachable or role missing send | Confirm the instance role has `sqs:SendMessage` on the queue ARN and `SQS_QUEUE_URL`/`AWS_REGION` are correct. |
@@ -482,7 +558,7 @@ aws sqs get-queue-attributes --queue-url $DLQ_URL --region $REGION `
 
 ---
 
-## 11. Tear down
+## 8. Tear down
 
 ```powershell
 docker rm -f com-event-shim 2>$null
