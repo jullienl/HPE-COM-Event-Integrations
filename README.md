@@ -272,6 +272,14 @@ Adding a new target is a small adapter in `com-event-core` (map `CanonicalEvent`
 > values (`BMC_HELIX_STATUS_RESOLVED`, impact/urgency selections) and the
 > `sentinel` shared-key / custom-table (`<LOG_TYPE>_CL`) conventions vary between
 > tenants.
+>
+> 🙋 **Volunteers welcome.** I don't have the infrastructure or the subscriptions
+> to test every one of these applications against a live tenant. If you run one of
+> these targets and can help validate its adapter end-to-end — confirm the payload,
+> the raise/clear behaviour, and any per-tenant tuning — please
+> [open an issue or a PR](https://github.com/jullienl/HPE-COM-Event-Integrations/issues).
+> Real-world feedback (even just "it worked" or the tweak you needed) is hugely
+> valuable and will be credited.
 
 ### Delivering to multiple targets at once
 
@@ -454,14 +462,17 @@ the relay's shim and the bridge inherit them together):
   adapters read fixed global env vars (`WEBHOOK_URL`), so two would collide. Needs
   per-instance config namespacing — labelled targets like `TARGETS=webhook:jira,webhook:pd`
   each reading its own `WEBHOOK__JIRA_URL` / `WEBHOOK__PD_URL`.
-- **Live-tenant validation of the built-in adapters** — only `obm` has been
+- **Live-tenant validation of the built-in adapters** — only `github` has been
   exercised end-to-end; the other 16 are coded against each vendor's documented
   API and need a connectivity test + per-instance tuning (see the caveat under
   [Targets supported](#targets-supported)).
 - **More target adapters** — each is a small `CanonicalEvent` → target mapping in
   `com-event-core`; contributions welcome.
-- **Deploy scripts for the shim** (Azure Container Instances / AWS ECS) and a
-  systemd unit for bare on-prem hosts.
+- **Deploy helpers for the shim** — the relay has Azure/AWS deploy scripts and the
+  bridge ships a [systemd unit](com-event-bridge/deploy/systemd/com-event-bridge.service),
+  but the outbound shim has neither yet: add a container deploy path (Azure
+  Container Instances / AWS ECS) and a systemd unit for running it on a bare
+  on-prem host.
 - **Bicep / CloudFormation templates** + "Deploy to Azure" / one-click AWS.
 
 ## License
