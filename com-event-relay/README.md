@@ -219,6 +219,11 @@ endpoint you provide. Two facts shape how you receive them:
 - Whatever talks to **your target system** only needs **outbound** access — it
   never has to be exposed to the internet.
 
+> **Shim egress ports.** The on-prem shim opens only **outbound** connections
+> (never inbound): to the cloud queue — **Azure Service Bus** on AMQP/TLS **5671**
+> (or **443** via AMQP-over-WebSockets if `5671` is blocked), or **AWS SQS** on
+> HTTPS **443** — and to your target on **443**.
+
 **This project is the cloud model.** It splits those two jobs so your internal
 network is never exposed:
 

@@ -532,6 +532,17 @@ consuming this one queue.
 First create the receive-only identity (used by both the test and production
 runs below):
 
+> **Egress firewall ports.** The shim opens only these **outbound** connections
+> (no inbound rule is ever needed):
+>
+> | Destination | Protocol | Port |
+> |-------------|----------|------|
+> | Amazon SQS (`sqs.<region>.amazonaws.com`) | HTTPS | **443** |
+> | GitHub API (`api.github.com`) | HTTPS | **443** |
+>
+> SQS is a plain HTTPS (REST) API, so the shim only needs **outbound 443** — to
+> the regional SQS endpoint and to your target (GitHub here, or any other adapter).
+
 ```powershell
 # Least-privilege consume policy for the one queue
 @"

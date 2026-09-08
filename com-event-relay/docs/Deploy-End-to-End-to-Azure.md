@@ -422,6 +422,19 @@ The shim is a container/process that drains the queue and forwards to GitHub. It
 needs **outbound** internet only — nothing inbound is opened — plus the **listen**
 connection string from step 2 and your GitHub details.
 
+> **Egress firewall ports.** The shim opens only these **outbound** connections
+> (no inbound rule is ever needed):
+>
+> | Destination | Protocol | Port |
+> |-------------|----------|------|
+> | Azure Service Bus (`<namespace>.servicebus.windows.net`) | AMQP over TLS | **5671** |
+> | — fallback if `5671` is blocked | AMQP over WebSockets (TLS) | **443** |
+> | GitHub API (`api.github.com`) | HTTPS | **443** |
+>
+> Service Bus uses AMQP on **5671** by default; if your egress policy only allows
+> `443`, Service Bus also supports AMQP-over-WebSockets on **443**. GitHub (and any
+> other target adapter) is plain HTTPS on **443**.
+
 Two ways to run it, depending on your goal:
 
 - **[5a — Test run](#5a--test-run-laptop)** — a quick, throwaway `docker run` on
