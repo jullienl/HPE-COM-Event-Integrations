@@ -460,6 +460,33 @@ POST https://<COM-API-base-URL>/compute-ops-mgmt/<webhooks-API-version>/webhooks
 }
 ```
 
+**Create a second webhook for the recovery (clear).** A COM webhook only fires for
+the transition its `eventFilter` selects, so the one above delivers *only* the
+**raise** (health left `OK`). To have the shim **close** the GitHub issue when the
+server becomes healthy again, register a **second** webhook pointing at the **same**
+relay URL with the same secret header, filtering on the **opposite** transition
+(health returned to `OK`):
+
+```http
+POST https://<COM-API-base-URL>/compute-ops-mgmt/<webhooks-API-version>/webhooks
+```
+```json
+{
+    "name": "AWS Relay - Webhook event for servers that recover",
+    "destination": "https://xxxxxxxxxxxx.eu-west-1.awsapprunner.com/com/webhook",
+    "state": "ENABLED",
+    "eventFilter": "type eq 'compute-ops/server' and new/hardware/health/summary eq 'OK' and changed/hardware/health/summary eq True",
+    "headers": {
+        "x-shim-secret": "<the shared secret from step 2>"
+    }
+}
+```
+
+The difference is `old/...` (raise: was `OK`, so it **left** `OK`) vs `new/...`
+(clear: is now `OK`, so it **returned** to `OK`). Both events carry the same
+`correlation_key` (`server:<serial>:health`), so the clear closes exactly the
+issue the raise opened. **Without the clear webhook, issues open but never close.**
+
 COM will first call `GET` (the handshake in step 3) and only enable the webhook
 once it echoes the challenge over public HTTPS with a valid certificate — App
 Runner provides that TLS automatically.
