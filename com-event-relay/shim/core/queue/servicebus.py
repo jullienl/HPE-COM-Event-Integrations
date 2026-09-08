@@ -30,15 +30,21 @@ class ServiceBusConsumer(QueueConsumer):
         )
 
     def receive(self) -> Iterator[ReceivedMessage]:
-        for msg in self._receiver:
-            props = {}
-            if msg.application_properties:
-                # Keys/values may be bytes; normalise to str.
-                for k, v in msg.application_properties.items():
-                    key = k.decode() if isinstance(k, bytes) else str(k)
-                    val = v.decode() if isinstance(v, bytes) else str(v)
-                    props[key] = val
-            yield ReceivedMessage(body=bytes(str(msg), "utf-8"), properties=props, handle=msg)
+        # Iterating a receiver created with max_wait_time stops after that many
+        # idle seconds (raises StopIteration). Wrap it so an idle window just
+        # re-enters the receiver instead of ending the generator — otherwise the
+        # worker loop exits and the container stops cleanly the first time the
+        # queue is empty for RECEIVE_MAX_WAIT seconds.
+        while True:
+            for msg in self._receiver:
+                props = {}
+                if msg.application_properties:
+                    # Keys/values may be bytes; normalise to str.
+                    for k, v in msg.application_properties.items():
+                        key = k.decode() if isinstance(k, bytes) else str(k)
+                        val = v.decode() if isinstance(v, bytes) else str(v)
+                        props[key] = val
+                yield ReceivedMessage(body=bytes(str(msg), "utf-8"), properties=props, handle=msg)
 
     def complete(self, msg: ReceivedMessage) -> None:
         self._receiver.complete_message(msg.handle)

@@ -155,6 +155,19 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   because it doesn't use the dedup store. Rule: if a non-root image writes state,
   the Dockerfile must provide a chown'd writable dir AND default the path there —
   don't rely on the code's relative default.
+- **A long-running queue consumer's `receive()` must loop forever (`while True`)
+  around the SDK receive — never let an idle/`max_wait` timeout end the
+  generator.** `azure-servicebus`: iterating a receiver created with
+  `max_wait_time` (our `RECEIVE_MAX_WAIT`, default 30s) raises `StopIteration`
+  after that many **idle** seconds. If `receive()` is just
+  `for msg in self._receiver: yield ...`, the generator ends on the first empty
+  window → the worker's `for msg in consumer.receive()` loop ends → `finally:
+  close()` → `main()` returns → **container exits cleanly (code 0)** the first
+  time the queue is idle. Symptom: shim "runs fine then just exits after a while",
+  no error. Fix: wrap the inner `for msg in self._receiver` in `while True:` so an
+  idle window re-enters the same receiver ([servicebus.py](../com-event-relay/shim/core/queue/servicebus.py)).
+  The SQS backend was already correct (long-poll inside `while True`). Rule: any
+  new consumer backend must keep looping past an empty/idle receive.
 - CI workflows live at repo-root `.github/workflows/`; shim/bridge builds also
   trigger on `com-event-core/**` changes.
 - **CI publishes images to GHCR only** (`ghcr.io/jullienl/com-event-{relay,shim,
