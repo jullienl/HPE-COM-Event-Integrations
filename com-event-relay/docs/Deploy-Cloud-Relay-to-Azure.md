@@ -43,8 +43,11 @@ COM ──webhook──►  [ RELAY on Azure Container Apps ]──►  Azure Se
 
 ## 0. Prerequisites
 
-- **This repo cloned locally** (both the script and the synthetic-event test in
-  step 6 use files from it):
+- **This repo cloned locally** — needed **only** for the deploy **script**
+  (Option A), the **synthetic-event test** (step 6, Path B), or running the shim
+  **directly with Python** (step 5). The **Docker** shim and the manual
+  walkthrough with a **real COM event** don't need it (they pull the published
+  image and read env vars only):
   ```powershell
   git clone https://github.com/jullienl/HPE-COM-Event-Integrations.git
   cd HPE-COM-Event-Integrations
@@ -81,7 +84,7 @@ webhook URL it needs, then pass it to the shim via that adapter's env vars (see
 
 For the GitHub example:
 
-1. Create (or pick) a repository, e.g. `your-org/com-lab-issues`.
+1. Create (or pick) a repository, e.g. `your-org/com-issues`.
 2. Create a **fine-grained PAT**: GitHub → *Settings → Developer settings →
    Personal access tokens → Fine-grained tokens → Generate new token*.
    - **Repository access:** *Only select repositories* → pick your repo.
@@ -325,16 +328,37 @@ Register a webhook with these settings:
 - **Destination URL:** `https://<FQDN>/com/webhook`  (from step 2)
 - **Custom header:** name `x-shim-secret` (your `$HDR`), value = `$SECRET`.
   COM authenticates with a **static header only** — this is that header.
-- **Event filter (`eventFilter`):** scope it to servers so the lab stays quiet,
-  e.g. server health changes. Filtering happens **server-side at COM**; the relay
-  forwards whatever COM sends.
+- **Event filter (`eventFilter`):** scope it to servers so only relevant events
+  flow, e.g. server health changes. Filtering happens **server-side at COM**; the
+  relay forwards whatever COM sends. **The resource type you filter on must match
+  the shim's `SERVER_MONITORS` (step 5):** this runbook watches the **server**
+  resource, so filter on server events. If you filter on a different resource
+  type, the shim's server-condition logic won't apply.
+
+A typical **Create webhook** call looks like this (replace the destination host
+with your relay `<FQDN>` from step 2 and the secret with `$SECRET` from step 2):
+
+```http
+POST https://<COM-API-base-URL>/compute-ops-mgmt/<webhooks-API-version>/webhooks
+```
+```json
+{
+    "name": "Azure Relay - Webhook event for servers that get unhealthy",
+    "destination": "https://com-event-relay.xxxx-xxxxx.westeurope.azurecontainerapps.io/com/webhook",
+    "state": "ENABLED",
+    "eventFilter": "type eq 'compute-ops/server' and old/hardware/health/summary eq 'OK' and changed/hardware/health/summary eq True",
+    "headers": {
+        "x-shim-secret": "<the shared secret from step 2>"
+    }
+}
+```
 
 COM will first call `GET` (the handshake in step 3) and only enable the webhook
 once it echoes the challenge over public HTTPS with a valid certificate — ACA
 provides that TLS automatically.
 
 **Verify the webhook was created and enabled.** In the same Postman collection,
-run the **Get webhooks** call (or `GET {{COMbaseUrl}}/compute-ops-mgmt/{{webhooks-API-version}}/webhooks`).
+run the **Get webhooks** call (or `GET https://<COM-API-base-URL>/compute-ops-mgmt/<webhooks-API-version>/webhooks`).
 Your webhook should report:
 
 ```json
@@ -352,26 +376,64 @@ failed — recheck the destination URL, the certificate, and the relay health
 > a slow/broken GitHub target never affects webhook health — that decoupling is
 > the whole point of the queue.
 
+> **Multiple webhooks, one relay/target.** The relay exposes a single URL and just
+> **enqueues whatever COM sends** — it doesn't care about resource type. So you can
+> register **several webhooks, each with a different `eventFilter`/resource type**
+> (e.g. one on `server`, one on `alert`), **all pointing at this same relay URL**
+> with the same secret header. They funnel into the same queue → same shim → same
+> target. The shim's normaliser dispatches on each payload's `type`
+> (`.../server` → server conditions, `.../alert` → alert, anything else → a
+> generic mapping — nothing is dropped). (The shim's `SERVER_MONITORS` setting,
+> introduced in step 5, only tunes the `server` branch — an `alert` webhook is
+> unaffected by it.)
+
 ---
 
 ## 5. Run the shim (drains the queue → GitHub)
 
-Run this on any machine with **outbound** internet (your laptop is fine for the
-test). It needs the **listen** connection string from step 2 and your GitHub
-details. Nothing inbound is opened.
+The shim is a container/process that drains the queue and forwards to GitHub. It
+needs **outbound** internet only — nothing inbound is opened — plus the **listen**
+connection string from step 2 and your GitHub details.
 
-> **Prerequisites — where the shim runs.** The shim is a container/process that
-> only needs **outbound** internet. Pick one host:
-> - **Laptop test (this runbook):** **Docker Desktop** running, in **Linux
->   containers** mode — verify with `docker version` (a **Server** section must
->   print; if only the Client shows, the daemon isn't started). Start Docker
->   Desktop and wait for the tray whale to go steady before `docker run`.
-> - **No Docker?** Run it straight with Python from your clone instead:
->   `cd com-event-relay/shim` → `pip install -r requirements.txt` →
->   `pip install ../../com-event-core` → set the env vars → `python worker.py`.
-> - **Production:** run it as a long-lived workload on any container platform —
->   **Azure Container Apps** (no ingress, outbound-only), **AKS/Kubernetes** (a
->   `Deployment`), **ECS**, or a **systemd** service. Same image, same env vars.
+Two ways to run it, depending on your goal:
+
+- **[5a — Test run](#5a--test-run-laptop)** — a quick, throwaway `docker run` on
+  your laptop to validate the end-to-end flow.
+- **[5b — Production run](#5b--production-run)** — a long-lived, auto-restarting
+  workload with a persistent de-dup volume.
+
+Both use the **same image and the same env vars** (listed in
+[Env vars reference](#env-vars-reference) below); they differ only in how the
+container is launched and where state lives.
+
+### 5a — Test run (laptop)
+
+> **Prerequisite.** **Docker Desktop** running, in **Linux containers** mode —
+> verify with `docker version` (a **Server** section must print; if only the
+> Client shows, the daemon isn't started). Start Docker Desktop and wait for the
+> tray whale to go steady before `docker run`.
+>
+> **No Docker?** Run it straight with Python from your clone instead:
+> `cd com-event-relay/shim` → `pip install -r requirements.txt` →
+> `pip install ../../com-event-core` → set the env vars → `python worker.py`.
+
+`--rm` throws the container away on stop and there's **no volume**, so the de-dup
+store is ephemeral — fine for a test:
+
+```powershell
+docker run --rm --name com-event-shim `
+  -e QUEUE_BACKEND=servicebus `
+  -e "SERVICE_BUS_CONNECTION=$SB_LISTEN" `
+  -e QUEUE_NAME=com-events `
+  -e TARGETS=github `
+  -e GITHUB_REPO=your-org/com-issues `
+  -e GITHUB_TOKEN=<your-fine-grained-PAT> `
+  -e SERVER_MONITORS=health `
+  ghcr.io/jullienl/com-event-shim:latest
+```
+
+The shim logs each message it drains, the events it normalises, and the forward
+result. Leave it running for the end-to-end test (step 6).
 
 > **Lost `$SB_LISTEN` (new shell / lost Azure CLI)?** The `shim-listen` rule and
 > its key still exist in Azure — the key is persistent, so just re-fetch it
@@ -386,17 +448,75 @@ details. Nothing inbound is opened.
 >   --query primaryConnectionString -o tsv
 > ```
 
+### 5b — Production run
+
+Run the shim as a **long-lived workload**. Any of these hosts works — same image,
+same env vars:
+
+- **Azure Container Apps** (no ingress, outbound-only).
+- **AKS or any on-prem / self-managed Kubernetes cluster** — a `Deployment` that
+  maps the env vars below to the container's `env`, with the listen connection
+  string / GitHub token in a `Secret`, and a `PersistentVolumeClaim` mounted at
+  `/data` (see de-dup persistence below).
+- **ECS**, or a **systemd** service on a VM.
+
+For a plain Docker host, drop `--rm`, add `--restart unless-stopped`, and mount a
+named volume at `/data` so the de-dup store survives restarts/upgrades (Docker
+auto-creates the `com-dedup` volume on first use — no pre-create needed):
+
 ```powershell
-docker run --rm --name com-event-shim `
+docker run -d --name com-event-shim --restart unless-stopped `
+  -v com-dedup:/data `
   -e QUEUE_BACKEND=servicebus `
   -e "SERVICE_BUS_CONNECTION=$SB_LISTEN" `
   -e QUEUE_NAME=com-events `
   -e TARGETS=github `
-  -e GITHUB_REPO=your-org/com-lab-issues `
+  -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
   ghcr.io/jullienl/com-event-shim:latest
 ```
+
+> **Secrets from files (vault) — recommended for production.** Every sensitive
+> value the shim reads (`SERVICE_BUS_CONNECTION`, `GITHUB_TOKEN`, and any adapter
+> token) also accepts a **`<NAME>_FILE`** form: point it at a file and the shim
+> reads the secret from there (trailing newline stripped) instead of the plain env
+> var. File-backed secrets don't leak via `docker inspect`, `/proc/<pid>/environ`,
+> or child processes, and any vault projects secrets **as files** — so use the
+> `_FILE` form in production:
+>
+> ```powershell
+> # Mount the vault-projected files and reference them via *_FILE:
+> docker run -d --name com-event-shim --restart unless-stopped `
+>   -v com-dedup:/data `
+>   -v /run/secrets:/run/secrets:ro `
+>   -e QUEUE_BACKEND=servicebus `
+>   -e SERVICE_BUS_CONNECTION_FILE=/run/secrets/sb-listen `
+>   -e QUEUE_NAME=com-events `
+>   -e TARGETS=github `
+>   -e GITHUB_REPO=your-org/com-issues `
+>   -e GITHUB_TOKEN_FILE=/run/secrets/github-token `
+>   -e SERVER_MONITORS=health `
+>   ghcr.io/jullienl/com-event-shim:latest
+> ```
+>
+> On **Kubernetes** mount an Azure Key Vault secret via the **Secrets Store CSI
+> driver** (or a plain `Secret`) at a path and set `SERVICE_BUS_CONNECTION_FILE` /
+> `GITHUB_TOKEN_FILE` to that mount; on **Azure Container Apps** mount the secret
+> and point `_FILE` at it. Full step-by-step wiring (incl. systemd `LoadCredential`
+> and Vault Agent) is in the relay README's
+> [Secrets management](../README.md#secrets-management).
+
+> **De-dup persistence.** The shim keeps a small SQLite de-dup store at
+> `DEDUP_DB_PATH` (the image defaults it to `/data/dedup.db`, a writable dir);
+> `/data` is a declared volume. Rows expire after `DEDUP_TTL_SECONDS` (default
+> `3600`), so the store stays tiny (kilobytes–megabytes). On Kubernetes back
+> `/data` with a small `ReadWriteOnce` `PersistentVolumeClaim`. If you **don't**
+> persist `/data`, the only effect of a restart is that the in-flight de-dup
+> window is lost — a redelivered event could produce a duplicate item until the
+> TTL re-populates; nothing is corrupted.
+
+### Env vars reference
 
 Key env vars (full list in [shim/.env.example](../shim/.env.example)):
 
@@ -407,16 +527,8 @@ Key env vars (full list in [shim/.env.example](../shim/.env.example)):
 | `QUEUE_NAME` | `com-events` | Must match the relay's `QUEUE_NAME`. |
 | `TARGETS` | `github` | One name, or comma-separated to fan out (`github,slack`). |
 | `GITHUB_REPO` / `GITHUB_TOKEN` | your repo + PAT | `GITHUB_REPO` is the **`owner/repo` slug only** (e.g. `jullienl/HPE-COM-Event-Integrations-HOL`), **not** a URL. Token needs **Issues: read/write**. |
-| `SERVER_MONITORS` | `health` | Watch server health (default). Add `power`/`connection`/`subscription` to watch more. |
+| `SERVER_MONITORS` | `health` | Watch server health (default). Add more as a **comma-separated** list — `SERVER_MONITORS=health,power,connection,subscription`. Only applies when the webhook's `eventFilter` targets the **server** resource type (step 4). **Each monitor you add needs a matching COM webhook** targeting this same relay (e.g. adding `power` requires a webhook with a **power** `eventFilter` pointing at the same relay URL) — the shim only sees the events COM is configured to send. **A condition you *don't* list is simply not monitored** — no item ever opens or closes for it and no error is raised (e.g. without `power`, a powered-off server never opens an item and powering back on never closes one). |
 | `DEDUP_TTL_SECONDS` | `3600` (default) | Suppresses duplicate/redelivered events within the window. |
-
-> **De-dup persistence (optional):** the shim keeps a small SQLite de-dup store at
-> `DEDUP_DB_PATH` (the image defaults it to `/data/dedup.db`, a writable dir). For
-> the test it can stay in-container; to persist de-dup state across restarts,
-> mount a volume: `-v com-dedup:/data`.
-
-The shim logs each message it drains, the events it normalises, and the forward
-result. Leave it running for the end-to-end test.
 
 ---
 

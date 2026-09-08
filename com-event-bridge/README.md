@@ -191,7 +191,7 @@ durable out of the box.
 | `SPOOL_MAX_BYTES` / `SPOOL_RETRY_SECONDS` / `SPOOL_RETRY_CAP` / `SPOOL_POLL_SECONDS` | no | Spool tuning (`spool` mode). |
 | `TARGETS` | no | Target(s): one name or comma-separated for fan-out, e.g. `halo,opsramp`. Default `webhook`. Each of `obm` / `servicenow` / `opsramp` / `halo` / `splunk` / `github` / `slack` / `teams` / `jira` / `pagerduty` / `sentinel` / `datadog` / `elastic` / `bmc_helix` / `dynatrace` / `grafana` / `webhook`. Fan-out is reliable in `spool` mode (retry re-attempts only failed targets); best-effort in `sync`. |
 | `TARGET_TIMEOUT` | no | Per-target HTTP timeout (s). Default `15`. |
-| `SERVER_MONITORS` | no | Server conditions to watch, comma-separated: `health` (default) / `power` / `connection` / `subscription`. Each opens/closes its own item. |
+| `SERVER_MONITORS` | no | Server conditions to watch, comma-separated: `health` (default) / `power` / `connection` / `subscription`. Each opens/closes its own item. A condition **not** listed is not monitored (no item opens/closes for it, no error). |
 | `DEDUP_DB_PATH` / `DEDUP_TTL_SECONDS` | no | De-dup store + window (`0` disables). |
 | `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD` | if `obm` in `TARGETS` | OBM Event REST API + Basic auth. |
 | `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD` | if `servicenow` in `TARGETS` | `SNOW_TABLE` optional (`em_event` default / `incident`). |

@@ -263,7 +263,10 @@ another's item.
 
 Default is `health`. Enable several comma-separated to fan
 out — e.g. `SERVER_MONITORS=health,power,connection` opens/closes an independent
-item per condition. Because snapshots are stateless, a healthy condition emits a
+item per condition. A condition you **don't** list is simply **not monitored**:
+no event is emitted and no item opens or closes for it (no error) — e.g. without
+`power`, a powered-off server never opens an item and powering back on never
+closes one. Because snapshots are stateless, a healthy condition emits a
 `clear` on every delivery; dedup suppresses the repeats and the adapter close is a
 no-op when nothing is open. `alert` and generic payloads still yield a single
 event. Consumers deliver the batch via `deliver_events()`.

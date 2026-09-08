@@ -525,7 +525,7 @@ docker compose --profile shim up --build
 | `AWS_REGION`             | if aws              | Region of the queue.                              |
 | `DEDUP_TTL_SECONDS`      | no                  | Dedup window. Default `3600`; `0` disables.       |
 | `TARGET_TIMEOUT`         | no                  | Per-target HTTP timeout (s). Default `15`.        |
-| `SERVER_MONITORS`        | no                  | Server conditions to watch, comma-separated: `health` (default) / `power` / `connection` / `subscription`. Each opens/closes its own item. |
+| `SERVER_MONITORS`        | no                  | Server conditions to watch, comma-separated: `health` (default) / `power` / `connection` / `subscription`. Each opens/closes its own item. A condition **not** listed is not monitored (no item opens/closes for it, no error). |
 | `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD`     | if `obm` in `TARGETS`        | OBM Event REST API + Basic auth.        |
 | `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD`       | if `servicenow` in `TARGETS` | `SNOW_TABLE` optional (`em_event` default / `incident`). |
 | `OPSRAMP_API_URL` / `OPSRAMP_TENANT_ID` / `OPSRAMP_KEY` / `OPSRAMP_SECRET` | if `opsramp` in `TARGETS` | OAuth2 client-credentials; `OPSRAMP_SERVICE_NAME` optional. |
