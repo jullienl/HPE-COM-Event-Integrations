@@ -5,8 +5,12 @@ WORKDIR /app
 # Monorepo build: the build context is the repository ROOT (see the CI workflow
 # and docker-compose). All COPY paths are relative to the repo root so the image
 # is self-contained — `git clone` + `docker build` works with no extra steps.
-#
-# The relay does NOT depend on com-event-core (it only receives + enqueues).
+
+# Shared logic (secrets helper get_secret, etc.). Installed from local source so
+# no PyPI publish is required. The relay imports `com_event_core` (get_secret),
+# so this MUST be installed or the app crashes on boot with ModuleNotFoundError.
+COPY com-event-core ./com-event-core
+RUN pip install --no-cache-dir ./com-event-core
 
 # Install dependencies first for better layer caching
 COPY com-event-relay/relay/requirements.txt .

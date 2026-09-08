@@ -128,6 +128,19 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   shim/bridge Dockerfiles `COPY com-event-core` + `pip install ./com-event-core`
   (no PyPI publish). Don't add `com-event-core==x` pins to shim/bridge
   requirements.
+- **If a service imports `com_event_core`, TWO things must both be true or it
+  breaks:** (1) its Dockerfile installs the package (`COPY com-event-core` +
+  `pip install ./com-event-core`, like shim/bridge), and (2) its CI `paths:`
+  filter includes `com-event-core/**`. The **relay** was migrated to
+  `get_secret()` (`from com_event_core import get_secret`) but its Dockerfile +
+  `build-relay.yml` still said "relay does not depend on com-event-core" → the
+  published image shipped WITHOUT the package → **crash on boot**
+  (`ModuleNotFoundError: No module named 'com_event_core'`). Symptom in the
+  cloud: container shows `Running`, ingress/TLS/port fine, but `curl` gets **0
+  bytes / stream timeout** because uvicorn exits before binding. General rule:
+  when you add a `com_event_core` import to any service, update that service's
+  Dockerfile install AND its workflow `paths:` in the same change; never trust a
+  "does not depend on core" comment — grep the source.
 - Shared logic (normalise, dedup, adapters) lives once in `com-event-core`; add a
   new target adapter there (`com_event_core/adapters/` + `_ADAPTERS` table).
 - CI workflows live at repo-root `.github/workflows/`; shim/bridge builds also

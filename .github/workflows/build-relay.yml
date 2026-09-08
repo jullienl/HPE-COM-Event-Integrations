@@ -5,7 +5,8 @@ name: Build and publish relay image
 # (no push) so forks/PRs can't publish images.
 #
 # Monorepo: the build context is the repo ROOT and the Dockerfile lives under
-# com-event-relay/relay/. The relay does not depend on com-event-core.
+# com-event-relay/relay/. The relay depends on com-event-core (get_secret), so
+# the build also triggers on com-event-core/** changes.
 
 on:
   push:
@@ -13,11 +14,13 @@ on:
     tags: ["v*.*.*"]
     paths:
       - "com-event-relay/relay/**"
+      - "com-event-core/**"
       - ".github/workflows/build-relay.yml"
   pull_request:
     branches: [main]
     paths:
       - "com-event-relay/relay/**"
+      - "com-event-core/**"
       - ".github/workflows/build-relay.yml"
 
 env:
