@@ -41,6 +41,20 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
 
 ---
 
+## Contents
+
+- [0. Prerequisites](#0-prerequisites)
+- [1. Prepare the target application](#1-prepare-the-target-application)
+- [2. Set your working variables, then choose how to deploy](#2-set-your-working-variables-then-choose-how-to-deploy)
+- [3. Verify the relay before wiring COM](#3-verify-the-relay-before-wiring-com)
+- [4. Configure the COM webhook](#4-configure-the-com-webhook)
+- [5. Create the shim's IAM identity (receive-only) and run it](#5-create-the-shims-iam-identity-receive-only-and-run-it)
+- [6. End-to-end test](#6-end-to-end-test)
+- [7. Troubleshooting](#7-troubleshooting)
+- [8. Tear down](#8-tear-down)
+
+---
+
 ## 0. Prerequisites
 
 - **This repo cloned locally** (both the script and the synthetic-event test in
@@ -361,8 +375,8 @@ $SECRET = "<the shared secret from step 2>"        # the 64-hex secret printed a
 **Liveness / readiness** (readiness returns `503` until the queue is reachable):
 
 ```powershell
-curl.exe -s "https://$FQDN/healthz"
-curl.exe -s "https://$FQDN/readyz"
+curl.exe -s "https://$FQDN/healthz"   # should return {"status":"ok"}
+curl.exe -s "https://$FQDN/readyz"    # should return {"status":"ready"}
 ```
 
 **Handshake** — COM proves it owns the endpoint via a `GET` with a challenge
@@ -394,7 +408,26 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 
 ## 4. Configure the COM webhook
 
-In the HPE GreenLake / Compute Ops Management console, create a webhook:
+> **Webhooks are created via the COM API, not the console UI.** The GreenLake /
+> Compute Ops Management console does **not** expose webhook creation today, so
+> you register the webhook with a `POST` to the COM webhooks API. The easiest way
+> is the ready-made **"Create webhook"** requests in my public Postman collection:
+>
+> [Lionel Jullien's public workspace → HPE Compute Ops Management (v2) → Webhooks](https://www.postman.com/jullienl/lionel-jullien-s-public-workspace/)
+>
+> Fork/import that collection, set your COM API token, and run one of the
+> **Create webhook** calls with the values below.
+>
+> **New to COM's API or Postman?** The collection's **Overview** page includes an
+> **initial setup guide** that walks you through creating an HPE GreenLake API
+> client, getting an access token, and configuring the Postman environment — do
+> that first, then come back and run the **Create webhook** call.
+>
+> For a deeper walkthrough of COM webhooks — how to create one, the available
+> event **filter** options, and the resources they cover — see the blog post
+> [Implementing webhooks with COM](https://jullienl.github.io/Implementing-webhooks-with-COM/).
+
+Register a webhook with these settings:
 
 - **Destination URL:** `https://<FQDN>/com/webhook`  (from step 2)
 - **Custom header:** name `x-shim-secret` (your `$HDR`), value = `$SECRET`.
@@ -406,6 +439,20 @@ In the HPE GreenLake / Compute Ops Management console, create a webhook:
 COM will first call `GET` (the handshake in step 3) and only enable the webhook
 once it echoes the challenge over public HTTPS with a valid certificate — App
 Runner provides that TLS automatically.
+
+**Verify the webhook was created and enabled.** In the same Postman collection,
+run the **Get webhooks** call (or `GET {{COMbaseUrl}}/compute-ops-mgmt/{{webhooks-API-version}}/webhooks`).
+Your webhook should report:
+
+```json
+"state": "ENABLED",
+"status": "ACTIVE"
+```
+
+`ENABLED` means the handshake succeeded; `ACTIVE` means COM will deliver events
+to it. If you instead see `DISABLED` / `ERROR`, the handshake or recent deliveries
+failed — recheck the destination URL, the certificate, and the relay health
+(step 3), then re-run the create/enable call.
 
 > Keep the webhook **healthy**: COM disables a webhook after **10 consecutive
 > non-2xx** responses. The relay returns `202` as soon as the event is queued, so
@@ -419,6 +466,20 @@ Runner provides that TLS automatically.
 The shim uses the **default boto3 credential chain**. On ECS/EC2 give it a
 **task/instance role**; for a laptop test, create a small **IAM user** limited to
 consuming this one queue.
+
+> **Prerequisites — where the shim runs.** The shim is a container/process that
+> only needs **outbound** internet. Pick one host:
+> - **Laptop test (this runbook):** **Docker Desktop** running, in **Linux
+>   containers** mode — verify with `docker version` (a **Server** section must
+>   print; if only the Client shows, the daemon isn't started). Start Docker
+>   Desktop and wait for the tray whale to go steady before `docker run`.
+> - **No Docker?** Run it straight with Python from your clone instead:
+>   `cd com-event-relay/shim` → `pip install -r requirements.txt` →
+>   `pip install ../../com-event-core` → set the env vars → `python worker.py`.
+> - **Production:** run it as a long-lived workload on any container platform —
+>   **AWS App Runner / ECS / EKS (Kubernetes)** or a **systemd** service — and
+>   prefer an **ECS/EC2 task/instance role** over static keys. Same image, same
+>   env vars.
 
 ```powershell
 # Least-privilege consume policy for the one queue
@@ -453,6 +514,23 @@ Now run the shim on any machine with **outbound** internet. It needs the queue
 URL, region, the receive-only credentials, and your GitHub details. Nothing
 inbound is opened.
 
+> **Lost your variables (new shell / lost AWS CLI)?** The queue and IAM user still
+> exist — re-fetch the queue URL/ARN (they're persistent). After `aws configure`:
+> ```powershell
+> $REGION    = "eu-west-1"
+> $QUEUE     = "com-events"
+> $QUEUE_URL = aws sqs get-queue-url --queue-name $QUEUE --region $REGION --query QueueUrl -o text
+> $QUEUE_ARN = aws sqs get-queue-attributes --queue-url $QUEUE_URL --region $REGION `
+>   --attribute-names QueueArn --query "Attributes.QueueArn" --output text
+> ```
+> But the IAM **secret access key is shown only once at creation** and cannot be
+> retrieved. If you lost it, mint a new one (delete the old key first to stay
+> within the 2-key limit):
+> ```powershell
+> aws iam create-access-key --user-name com-shim `
+>   --query "AccessKey.{id:AccessKeyId, secret:SecretAccessKey}" --output json
+> ```
+
 ```powershell
 docker run --rm --name com-event-shim `
   -e QUEUE_BACKEND=sqs `
@@ -476,7 +554,7 @@ Key env vars (full list in [shim/.env.example](../shim/.env.example)):
 | `AWS_REGION` | `$REGION` | Region of the queue. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | com-shim keys | Or use an ECS/EC2 role and omit these. |
 | `TARGETS` | `github` | One name, or comma-separated to fan out (`github,slack`). |
-| `GITHUB_REPO` / `GITHUB_TOKEN` | your repo + PAT | Token needs **Issues: read/write**. |
+| `GITHUB_REPO` / `GITHUB_TOKEN` | your repo + PAT | `GITHUB_REPO` is the **`owner/repo` slug only** (e.g. `jullienl/HPE-COM-Event-Integrations-HOL`), **not** a URL. Token needs **Issues: read/write**. |
 | `SERVER_MONITORS` | `health` | Watch server health (default). Add `power`/`connection`/`subscription` to watch more. |
 | `DEDUP_TTL_SECONDS` | `3600` (default) | Suppresses duplicate/redelivered events within the window. |
 
@@ -530,6 +608,7 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | COM won't enable the webhook | Handshake failed | Confirm `GET /com/webhook` echoes the challenge over **public HTTPS** (step 3). Check the URL has no typo and ends in `/com/webhook`. |
+| `curl` to `/healthz` hangs / **stream timeout** / 0 bytes (but TLS connects) | Relay container **crashed on boot** — TCP+TLS reach the service but the app exited before binding `:8080`, so nothing answers | Check the application logs (below): a Python traceback / `ModuleNotFoundError` or a missing required env var means the app never started. Confirm the service `Status` is `RUNNING` and `Port=8080`. Fix the cause, re-mirror the image if needed, then deploy again. |
 | Relay returns `401` | Wrong/missing header | Header **name** must equal `SHARED_SECRET_HEADER` (`x-shim-secret`) and value must equal `$SECRET`. |
 | Relay returns `413` | Body too large | Raise `MAX_BODY_BYTES` on the relay service if you genuinely send large payloads. |
 | Relay returns `503` / `/readyz` fails | Queue unreachable or role missing send | Confirm the instance role has `sqs:SendMessage` on the queue ARN and `SQS_QUEUE_URL`/`AWS_REGION` are correct. |
@@ -543,7 +622,21 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 Handy log/inspection commands:
 
 ```powershell
-# App Runner application logs go to CloudWatch Logs
+# 1. Is the service actually running? (Status, and the URL host)
+aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGION `
+  --query "Service.{status:Status, url:ServiceUrl, port:SourceConfiguration.ImageRepository.ImageConfiguration.Port}" --output table
+
+# 2. The real story — the container's own application logs (boot errors / tracebacks)
+aws logs tail "/aws/apprunner/$APP/*/application" --region $REGION --since 15m
+
+# 3. System/platform events (image pull, health-check, deployment failures)
+aws logs tail "/aws/apprunner/$APP/*/service" --region $REGION --since 15m
+
+# 4. Recent deployment / status transitions
+aws apprunner list-operations --service-arn $SERVICE_ARN --region $REGION `
+  --query "OperationSummaryList[].{type:Type, status:Status, started:StartedAt}" --output table
+
+# Follow the application logs live
 aws logs tail "/aws/apprunner/$APP/*/application" --region $REGION --follow
 
 # Messages waiting / in flight on the queue

@@ -27,6 +27,20 @@ COM ──webhook──►  [ RELAY on Azure Container Apps ]──►  Azure Se
 
 ---
 
+## Contents
+
+- [0. Prerequisites](#0-prerequisites)
+- [1. Prepare the target application](#1-prepare-the-target-application)
+- [2. Choose how to deploy the relay](#2-choose-how-to-deploy-the-relay)
+- [3. Verify the relay before wiring COM](#3-verify-the-relay-before-wiring-com)
+- [4. Configure the COM webhook](#4-configure-the-com-webhook)
+- [5. Run the shim (drains the queue → GitHub)](#5-run-the-shim-drains-the-queue--github)
+- [6. End-to-end test](#6-end-to-end-test)
+- [7. Troubleshooting](#7-troubleshooting)
+- [8. Tear down](#8-tear-down)
+
+---
+
 ## 0. Prerequisites
 
 - **This repo cloned locally** (both the script and the synthetic-event test in
@@ -250,8 +264,8 @@ $SECRET = "<the shared secret from step 2>" # the 64-hex secret printed at deplo
 **Liveness / readiness** (readiness returns `503` until the queue is reachable):
 
 ```powershell
-curl.exe -s "https://$FQDN/healthz"
-curl.exe -s "https://$FQDN/readyz"
+curl.exe -s "https://$FQDN/healthz"    # should return {"status":"ok"}
+curl.exe -s "https://$FQDN/readyz"     # should return {"status":"ready"}
 ```
   > **`curl.exe` vs `curl`:** the commands above use `curl.exe`, which is correct on
   > **Windows PowerShell** (there plain `curl` is an alias for `Invoke-WebRequest`).
@@ -287,7 +301,26 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 
 ## 4. Configure the COM webhook
 
-In the HPE GreenLake / Compute Ops Management console, create a webhook:
+> **Webhooks are created via the COM API, not the console UI.** The GreenLake /
+> Compute Ops Management console does **not** expose webhook creation today, so
+> you register the webhook with a `POST` to the COM webhooks API. The easiest way
+> is the ready-made **"Create webhook"** requests in my public Postman collection:
+>
+> [Lionel Jullien's public workspace → HPE Compute Ops Management (v2) → Webhooks](https://www.postman.com/jullienl/lionel-jullien-s-public-workspace/)
+>
+> Fork/import that collection, set your COM API token, and run one of the
+> **Create webhook** calls with the values below.
+>
+> **New to COM's API or Postman?** The collection's **Overview** page includes an
+> **initial setup guide** that walks you through creating an HPE GreenLake API
+> client, getting an access token, and configuring the Postman environment — do
+> that first, then come back and run the **Create webhook** call.
+>
+> For a deeper walkthrough of COM webhooks — how to create one, the available
+> event **filter** options, and the resources they cover — see the blog post
+> [Implementing webhooks with COM](https://jullienl.github.io/Implementing-webhooks-with-COM/).
+
+Register a webhook with these settings:
 
 - **Destination URL:** `https://<FQDN>/com/webhook`  (from step 2)
 - **Custom header:** name `x-shim-secret` (your `$HDR`), value = `$SECRET`.
@@ -299,6 +332,20 @@ In the HPE GreenLake / Compute Ops Management console, create a webhook:
 COM will first call `GET` (the handshake in step 3) and only enable the webhook
 once it echoes the challenge over public HTTPS with a valid certificate — ACA
 provides that TLS automatically.
+
+**Verify the webhook was created and enabled.** In the same Postman collection,
+run the **Get webhooks** call (or `GET {{COMbaseUrl}}/compute-ops-mgmt/{{webhooks-API-version}}/webhooks`).
+Your webhook should report:
+
+```json
+"state": "ENABLED",
+"status": "ACTIVE"
+```
+
+`ENABLED` means the handshake succeeded; `ACTIVE` means COM will deliver events
+to it. If you instead see `DISABLED` / `ERROR`, the handshake or recent deliveries
+failed — recheck the destination URL, the certificate, and the relay health
+(step 3), then re-run the create/enable call.
 
 > Keep the webhook **healthy**: COM disables a webhook after **10 consecutive
 > non-2xx** responses. The relay returns `202` as soon as the event is queued, so
@@ -312,6 +359,32 @@ provides that TLS automatically.
 Run this on any machine with **outbound** internet (your laptop is fine for the
 test). It needs the **listen** connection string from step 2 and your GitHub
 details. Nothing inbound is opened.
+
+> **Prerequisites — where the shim runs.** The shim is a container/process that
+> only needs **outbound** internet. Pick one host:
+> - **Laptop test (this runbook):** **Docker Desktop** running, in **Linux
+>   containers** mode — verify with `docker version` (a **Server** section must
+>   print; if only the Client shows, the daemon isn't started). Start Docker
+>   Desktop and wait for the tray whale to go steady before `docker run`.
+> - **No Docker?** Run it straight with Python from your clone instead:
+>   `cd com-event-relay/shim` → `pip install -r requirements.txt` →
+>   `pip install ../../com-event-core` → set the env vars → `python worker.py`.
+> - **Production:** run it as a long-lived workload on any container platform —
+>   **Azure Container Apps** (no ingress, outbound-only), **AKS/Kubernetes** (a
+>   `Deployment`), **ECS**, or a **systemd** service. Same image, same env vars.
+
+> **Lost `$SB_LISTEN` (new shell / lost Azure CLI)?** The `shim-listen` rule and
+> its key still exist in Azure — the key is persistent, so just re-fetch it
+> (don't redeploy). After `az login`:
+> ```powershell
+> $RG    = "rg-com-relay"
+> $QUEUE = "com-events"
+> # Rediscover the namespace (its name has a random suffix)
+> $SB_NS = az servicebus namespace list --resource-group $RG --query "[0].name" -o tsv
+> $SB_LISTEN = az servicebus queue authorization-rule keys list --resource-group $RG `
+>   --namespace-name $SB_NS --queue-name $QUEUE --name shim-listen `
+>   --query primaryConnectionString -o tsv
+> ```
 
 ```powershell
 docker run --rm --name com-event-shim `
@@ -333,13 +406,14 @@ Key env vars (full list in [shim/.env.example](../shim/.env.example)):
 | `SERVICE_BUS_CONNECTION` | `$SB_LISTEN` | **Listen**-scoped (least privilege). |
 | `QUEUE_NAME` | `com-events` | Must match the relay's `QUEUE_NAME`. |
 | `TARGETS` | `github` | One name, or comma-separated to fan out (`github,slack`). |
-| `GITHUB_REPO` / `GITHUB_TOKEN` | your repo + PAT | Token needs **Issues: read/write**. |
+| `GITHUB_REPO` / `GITHUB_TOKEN` | your repo + PAT | `GITHUB_REPO` is the **`owner/repo` slug only** (e.g. `jullienl/HPE-COM-Event-Integrations-HOL`), **not** a URL. Token needs **Issues: read/write**. |
 | `SERVER_MONITORS` | `health` | Watch server health (default). Add `power`/`connection`/`subscription` to watch more. |
 | `DEDUP_TTL_SECONDS` | `3600` (default) | Suppresses duplicate/redelivered events within the window. |
 
 > **De-dup persistence (optional):** the shim keeps a small SQLite de-dup store at
-> `DEDUP_DB_PATH` (default `./dedup.db`). For the test it can stay in-container;
-> for anything longer-lived, mount a volume: `-v com-dedup:/data -e DEDUP_DB_PATH=/data/dedup.db`.
+> `DEDUP_DB_PATH` (the image defaults it to `/data/dedup.db`, a writable dir). For
+> the test it can stay in-container; to persist de-dup state across restarts,
+> mount a volume: `-v com-dedup:/data`.
 
 The shim logs each message it drains, the events it normalises, and the forward
 result. Leave it running for the end-to-end test.
@@ -391,6 +465,7 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | COM won't enable the webhook | Handshake failed | Confirm `GET /com/webhook` echoes the challenge over **public HTTPS** with a valid cert (step 3). Check the URL has no typo and ends in `/com/webhook`. |
+| `curl` to `/healthz` hangs / **stream timeout** / 0 bytes (but TLS connects) | Relay container **crashed on boot** — TCP+TLS reach the ingress but the app exited before binding `:8080`, so nothing answers | Check the container logs (below): a Python traceback / `ModuleNotFoundError` or a missing required env var means the app never started. Confirm `runningStatus` and that ingress `targetPort` is `8080`. Fix the cause, then roll a new revision (`az containerapp update --image …:latest`). |
 | Relay returns `401` | Wrong/missing header | Header **name** must equal `SHARED_SECRET_HEADER` (`x-shim-secret`) and value must equal `$SECRET`. |
 | Relay returns `413` | Body too large | Raise `MAX_BODY_BYTES` on the relay app if you genuinely send large payloads. |
 | Relay returns `503` | Queue unreachable | Check the **send** connection string secret and that the namespace/queue exist; `GET /readyz` should be `200`. |
@@ -403,7 +478,21 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 Handy log/inspection commands:
 
 ```powershell
-# Relay logs (last 5 min, follow)
+# 1. Is the app actually running, and what port does ingress target?
+az containerapp show --resource-group $RG --name $APP `
+  --query "{running:properties.runningStatus, prov:properties.provisioningState, targetPort:properties.configuration.ingress.targetPort, image:properties.template.containers[0].image}" -o table
+
+# 2. The real story — the container's own logs (boot errors / tracebacks)
+az containerapp logs show --resource-group $RG --name $APP --tail 100
+
+# 3. System/platform events (image pull failures, restarts, probe failures)
+az containerapp logs show --resource-group $RG --name $APP --type system --tail 50
+
+# 4. Revision health (are replicas actually healthy?)
+az containerapp revision list --resource-group $RG --name $APP `
+  --query "[].{name:name, active:properties.active, healthy:properties.healthState, replicas:properties.replicas}" -o table
+
+# Follow the relay logs live
 az containerapp logs show --resource-group $RG --name $APP --follow
 
 # Messages sitting in the queue / dead-letter counts

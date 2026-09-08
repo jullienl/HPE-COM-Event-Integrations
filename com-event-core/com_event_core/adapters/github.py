@@ -9,7 +9,8 @@ hidden marker line in the body. On a clear, the adapter finds the still-open
 issue by that label via the Search API and closes it — no database needed.
 
 Env:
-  GITHUB_REPO       "owner/repo" the issues live in (required).
+  GITHUB_REPO       "owner/repo" slug the issues live in, e.g. jullienl/my-repo
+                    (slug only, NOT a URL) (required).
   GITHUB_TOKEN      Token with issues:write on the repo (required, secret) — a
                     fine-grained PAT (Issues: Read and write) or classic PAT.
   GITHUB_API_URL    API base. Default https://api.github.com. For GitHub
