@@ -143,6 +143,18 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   "does not depend on core" comment — grep the source.
 - Shared logic (normalise, dedup, adapters) lives once in `com-event-core`; add a
   new target adapter there (`com_event_core/adapters/` + `_ADAPTERS` table).
+- **Non-root image + default state file in a root-owned `WORKDIR` = write crash.**
+  All images run as a non-root user (`USER shim/bridge/relay`, uid 10001) with
+  `WORKDIR /app` (root-owned). Any component that writes a file to a **relative
+  default path** (e.g. `DedupStore` → `DEDUP_DB_PATH=./dedup.db` → `/app/dedup.db`)
+  fails at runtime with `sqlite3.OperationalError: unable to open database file`.
+  Fix in the Dockerfile like the bridge does: create a writable dir
+  (`mkdir -p /data && chown <user> /data`), `VOLUME ["/data"]`, and set the env
+  default to an absolute writable path (`ENV DEDUP_DB_PATH=/data/dedup.db`). The
+  shim shipped without this and crashed on `DedupStore()`; the relay never hit it
+  because it doesn't use the dedup store. Rule: if a non-root image writes state,
+  the Dockerfile must provide a chown'd writable dir AND default the path there —
+  don't rely on the code's relative default.
 - CI workflows live at repo-root `.github/workflows/`; shim/bridge builds also
   trigger on `com-event-core/**` changes.
 - **CI publishes images to GHCR only** (`ghcr.io/jullienl/com-event-{relay,shim,

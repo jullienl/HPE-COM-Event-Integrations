@@ -19,8 +19,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY com-event-relay/shim/worker.py .
 COPY com-event-relay/shim/core ./core
 
-# Run as a non-root user
-RUN useradd --create-home --uid 10001 shim
+# The de-dup SQLite DB must live on a writable, non-root-owned path (the default
+# ./dedup.db lands in root-owned /app and fails with "unable to open database
+# file"). Default it to /data and (optionally) mount a volume there to persist
+# de-dup state across restarts.
+VOLUME ["/data"]
+ENV DEDUP_DB_PATH=/data/dedup.db
+
+# Run as a non-root user; give it ownership of the writable data dir
+RUN useradd --create-home --uid 10001 shim \
+    && mkdir -p /data && chown shim /data
 USER shim
 
 # Outbound-only consumer; no ports exposed.
