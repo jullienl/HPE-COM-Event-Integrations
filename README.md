@@ -307,9 +307,16 @@ types plus a generic fallback:
 
 | Resource type | COM `type` (payload) | What it is | How raise vs clear is detected |
 |---------------|----------------------|------------|--------------------------------|
-| **Server health** | `compute-ops-mgmt/server` | A server whose `hardware.health.summary` transitioned | **raise** when health ≠ OK; **clear** when it returns to OK |
+| **Server** | `compute-ops-mgmt/server` | A full-state server **snapshot**. One or more **conditions** are evaluated per delivery, selected by `SERVER_MONITORS`: `health` (default), `power`, `connection`, `subscription` | Per condition: **raise** when it's a problem (health ≠ OK, power OFF, disconnected, not subscribed); **clear** when it returns to good |
 | **Alert** | `compute-ops-mgmt/alert` | An individual COM alert (create / delete) | **raise** on create; **clear** when `cleared`/`clearedAt` is set or the alert is deleted |
 | Generic | anything else | Any other COM resource | Passed through as a raise; adapters still deliver it |
+
+> **`power` / `connection` / `subscription` are not extra resource types.** They
+> are additional **conditions** inside the *same* `compute-ops-mgmt/server`
+> snapshot, enabled with `SERVER_MONITORS` (comma-separated). COM still delivers
+> just one server payload; the shim evaluates each enabled condition and emits an
+> independent raise/clear item for it. See
+> [Server conditions](com-event-core/README.md#server-conditions-multi-attribute-monitoring).
 
 > **Namespace quirk:** COM's `eventFilter` grammar uses the short namespace
 > (`compute-ops/server`) while the **delivered payload** `type` is the long one
@@ -330,6 +337,42 @@ type eq 'compute-ops/server' and old/hardware/health/summary eq 'OK' and changed
 type eq 'compute-ops/server' and new/hardware/health/summary eq 'OK' and changed/hardware/health/summary eq True
 ```
 
+Server power (`SERVER_MONITORS=power`) — raise then clear:
+
+```text
+# raise: server powered off (left ON)
+type eq 'compute-ops/server' and old/hardware/powerState eq 'ON' and changed/hardware/powerState eq True
+# clear: server powered back on
+type eq 'compute-ops/server' and new/hardware/powerState eq 'ON' and changed/hardware/powerState eq True
+```
+
+Server connection (`SERVER_MONITORS=connection`) — raise then clear:
+
+```text
+# raise: server disconnected from COM (was connected)
+type eq 'compute-ops/server' and old/state/connected eq True and changed/state/connected eq True
+# clear: server reconnected to COM (also matches a brand-new server's first connect)
+type eq 'compute-ops/server' and old/state/connected eq False and changed/state/connected eq True
+```
+
+Server subscription (`SERVER_MONITORS=subscription`) — raise then clear:
+
+```text
+# raise: subscription left SUBSCRIBED (lapsed / expired)
+type eq 'compute-ops/server' and old/state/subscriptionState eq 'SUBSCRIBED' and changed/state/subscriptionState eq True
+# clear: subscription back to SUBSCRIBED
+type eq 'compute-ops/server' and new/state/subscriptionState eq 'SUBSCRIBED' and changed/state/subscriptionState eq True
+```
+
+
+> Each server condition keys on its own attribute (`hardware/health/summary`,
+> `hardware/powerState`, `state/connected`, `state/subscriptionState`) — the same
+> field the shim evaluates in the snapshot. A condition only produces items if it's
+> enabled in the shim's `SERVER_MONITORS` **and** COM is sending the matching
+> events. Enable each condition on both sides, and register **both** the raise and
+> the clear webhook for it (all pointing at the same relay/bridge URL) so the item
+> opens on the problem and closes on recovery.
+
 Alerts — raise then clear:
 
 ```text
@@ -339,11 +382,13 @@ type eq 'compute-ops/alert' and operation eq 'Created'
 type eq 'compute-ops/alert' and operation eq 'Deleted'
 ```
 
-Each event carries a stable **`correlation_key`** (`server:<serial>` or
-`alert:<id>`) so a later clear closes exactly the object the raise opened —
-that's what the "Close on clear" column above builds on. De-duplication is keyed
-on `correlation_key + action + severity`, so a raise and its clear are never
-collapsed, but repeats of either are still suppressed. See the
+Each event carries a stable **`correlation_key`** (`server:<serial>:<condition>`
+for a server condition — e.g. `server:<serial>:health` — or `alert:<id>`) so a
+later clear closes exactly the object the raise opened — that's what the "Close on
+clear" column above builds on. Because the key includes the **condition**, a
+`power` recovery never closes a `health` item on the same server. De-duplication
+is keyed on `correlation_key + action + severity`, so a raise and its clear are
+never collapsed, but repeats of either are still suppressed. See the
 [com-event-relay README](com-event-relay/README.md) for the full webhook setup.
 
 ## Images
