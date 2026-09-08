@@ -1,4 +1,4 @@
-# Deploy the cloud relay to Azure — end-to-end runbook (GitHub Issues target)
+# Deploy the relay on Azure + run the on-prem shim — end-to-end runbook (GitHub Issues target)
 
 A step-by-step guide to stand up the **cloud relay + on-prem shim** on
 Azure and take it for a first real-world spin using the **GitHub Issues**

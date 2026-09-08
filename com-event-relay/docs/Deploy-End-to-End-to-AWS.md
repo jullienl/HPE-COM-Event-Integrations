@@ -1,4 +1,4 @@
-# Deploy the cloud relay to AWS — end-to-end runbook (GitHub Issues target)
+# Deploy the relay on AWS + run the on-prem shim — end-to-end runbook (GitHub Issues target)
 
 A step-by-step guide to stand up the **cloud relay + on-prem shim** on
 AWS and take it for a first real-world spin using the **GitHub Issues** adapter:
@@ -6,7 +6,7 @@ a COM *server health CRITICAL* opens an issue, and the matching *recovery* close
 it.
 
 This is the AWS counterpart of
-[Deploy-Cloud-Relay-to-Azure.md](Deploy-Cloud-Relay-to-Azure.md) — same shape,
+[Deploy-End-to-End-to-Azure.md](Deploy-End-to-End-to-Azure.md) — same shape,
 AWS services (App Runner + SQS) instead of Azure (Container Apps + Service Bus).
 
 ```

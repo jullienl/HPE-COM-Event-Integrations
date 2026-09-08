@@ -398,7 +398,7 @@ docker run -p 8080:8080 --env-file .env com-event-relay:latest
 
 > **Step-by-step runbook:** for a full walk-through — provisioning, wiring the COM
 > webhook, running the shim, and an end-to-end GitHub Issues test — see
-> [docs/Deploy-Cloud-Relay-to-Azure.md](docs/Deploy-Cloud-Relay-to-Azure.md).
+> [docs/Deploy-End-to-End-to-Azure.md](docs/Deploy-End-to-End-to-Azure.md).
 
 ### Deploy to AWS (App Runner)
 
@@ -410,7 +410,7 @@ export INSTANCE_ROLE_ARN=arn:aws:iam::123456789012:role/com-relay-sqs-send
 
 > **Step-by-step runbook:** for a full walk-through — provisioning, wiring the COM
 > webhook, running the shim, and an end-to-end GitHub Issues test — see
-> [docs/Deploy-Cloud-Relay-to-AWS.md](docs/Deploy-Cloud-Relay-to-AWS.md).
+> [docs/Deploy-End-to-End-to-AWS.md](docs/Deploy-End-to-End-to-AWS.md).
 
 ## Local development with Docker Compose
 
