@@ -6,10 +6,10 @@ adapter: a COM *server health CRITICAL* opens an issue, and the matching
 *recovery* closes it.
 
 ```
-COM ──webhook──►  [ RELAY on Azure Container Apps ]──►  Azure Service Bus queue
-(cloud, public)         GET handshake + x-shim-secret         │
-                                                              │ (outbound-only)
-                              [ SHIM near you ]──drains queue──┘
+COM    ──webhook──►   [ RELAY on Azure Container Apps ]  ──►  Azure Service Bus queue
+(cloud, public)         GET handshake + x-shim-secret          │
+                                                               │ (outbound-only)
+                              [ SHIM on-prem ] ──drains queue──┘
                                      │
                                      └──►  GitHub Issues  (open on raise / close on clear)
 ```
