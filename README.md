@@ -69,7 +69,7 @@ This repository provides that integration layer once, with shared logic that can
 
 # What it provides
 
-### COM webhook compatibility
+## COM webhook compatibility
 
 The receiver handles the COM webhook contract, including:
 
@@ -78,7 +78,7 @@ The receiver handles the COM webhook contract, including:
 - request validation and input hardening
 - COM payload parsing
 
-### Normalised event model
+## Normalised event model
 
 COM events are transformed into a neutral `CanonicalEvent` before target-specific delivery.
 
@@ -96,7 +96,7 @@ Target-specific adapter
 
 from the API details of ServiceNow, Jira, OpsRamp, Splunk, Datadog, and other platforms.
 
-### Reliable delivery
+## Reliable delivery
 
 Depending on the deployment model:
 
@@ -105,21 +105,21 @@ Depending on the deployment model:
 
 This allows receive and delivery to be decoupled and provides retry when a target is temporarily unavailable.
 
-### De-duplication
+## De-duplication
 
 Repeated or redelivered COM events are suppressed so retries do not create duplicate tickets or alerts.
 
-### Raise / clear correlation
+## Raise / clear correlation
 
 A stable `correlation_key` ties a problem event to its recovery event.
 
 Targets that support stateful objects can therefore close or resolve the object opened by the original raise.
 
-### Multi-target fan-out
+## Multi-target fan-out
 
 A single COM event can be delivered independently to several different target adapters.
 
-### Pluggable adapters
+## Pluggable adapters
 
 Adding an integration is primarily a mapping from:
 
@@ -129,7 +129,7 @@ CanonicalEvent -> target API
 
 The COM receiver does not need to be redesigned for every new target.
 
-### Ready-to-deploy containerized solution
+## Ready-to-deploy containerized solution
 
 The Relay, Shim, and Bridge are packaged as ready-to-run container images, so deployment is quick and consistent across environments. All settings are supplied through configuration — the same images run everywhere without code changes.
 
@@ -153,7 +153,7 @@ All deployment-specific behavior is supplied through configuration, including:
 - delivery and timeout settings
 
 
-### Secure outbound-only option
+## Secure outbound-only option
 
 With **Relay + Shim**, the public endpoint lives in Azure or AWS and the on-premises shim consumes from the queue using outbound connectivity.
 
