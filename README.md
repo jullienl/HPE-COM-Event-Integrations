@@ -12,26 +12,7 @@ The framework uses a shared `CanonicalEvent` model and pluggable target adapters
 
 ## At a glance
 
-```mermaid
-flowchart LR
-    COM[HPE Compute Ops Management]
-
-    COM -->|HTTPS webhook| RELAY[Cloud Relay<br/>Azure / AWS]
-    RELAY --> QUEUE[Durable Queue]
-    QUEUE -->|Outbound only| SHIM[On-prem Shim]
-
-    COM -->|HTTPS webhook| BRIDGE[On-prem Bridge]
-
-    SHIM --> CORE[CanonicalEvent + Target Adapters]
-    BRIDGE --> CORE
-
-    CORE --> ITSM[ITSM]
-    CORE --> ITOM[ITOM / AIOps]
-    CORE --> SIEM[SIEM / Security]
-    CORE --> OBS[Observability / Monitoring]
-    CORE --> CHAT[ChatOps / Incident Response]
-    CORE --> GEN[Generic Webhooks]
-```
+<img src="docs/images/at-glance-diagram.png" alt="At glance architecture" width="900" />
 
 Two deployment models are available:
 
@@ -217,7 +198,7 @@ Target application
 - Durable cloud queue
 - Receive and delivery are decoupled
 - Target outages do not require COM to retry directly
-- Relay and delivery can scale independently
+- Public receive and target delivery are decoupled and can be operated independently
 - Suitable for private/internal targets
 
 ### Trade-offs
@@ -284,24 +265,7 @@ See [`com-event-bridge`](com-event-bridge/) for deployment details and [`end-to-
 
 # Which deployment should I choose?
 
-```mermaid
-flowchart TD
-    START([Forward COM events])
-
-    START --> Q1{Can you expose an HTTPS endpoint<br/>that COM can reach?}
-
-    Q1 -->|No| Q2{Can you use<br/>Azure or AWS?}
-    Q1 -->|Yes| Q3{Is a native COM integration<br/>sufficient for this target?}
-
-    Q2 -->|Yes| RELAY[com-event-relay<br/>Cloud Relay + outbound-only Shim]
-    Q2 -->|No| EDGE[An alternative externally reachable<br/>edge design is required]
-
-    Q3 -->|Yes| NATIVE[Use the native COM integration]
-    Q3 -->|No| Q4{Prefer managed public edge<br/>and durable cloud queue?}
-
-    Q4 -->|Yes| RELAY
-    Q4 -->|No| BRIDGE[com-event-bridge<br/>Single-box receiver]
-```
+<img src="docs/images/com-event-deployment-decision-tree.png" alt="COM Event Deployment Decision Tree" width="900" />
 
 | Option | Use it when |
 |---|---|
@@ -450,7 +414,7 @@ Today, this is particularly relevant for **ServiceNow** and **OpsRamp**.
 
 Use the native integration when:
 
-- COM can directly reach the integration endpoint
+- the native integration's connectivity and workflow requirements meet your needs
 - the native payload and behavior meet your requirements
 - you do not need an additional buffering or transformation layer
 
@@ -708,9 +672,9 @@ The images are self-contained. Building from the repository root includes the lo
 
 Use the deployment runbooks for the fastest path from an empty environment to a working COM-to-target pipeline:
 
-- [`com-event-relay`](com-event-relay/) — Azure relay + on-prem shim
-- [`com-event-relay`](com-event-relay/) — AWS relay + on-prem shim
-- [`com-event-bridge`](com-event-bridge/) — single-box on-prem deployment
+- [`Azure end-to-end deployment`](com-event-relay/docs/Deploy-End-to-End-to-Azure.md) — Azure relay + on-prem shim
+- [`AWS end-to-end deployment`](com-event-relay/docs/Deploy-End-to-End-to-AWS.md) — AWS relay + on-prem shim
+- [`Bridge end-to-end deployment`](com-event-bridge/docs/Deploy-End-to-End-On-Prem.md) — single-box on-prem deployment
 
 Each flow covers the public receiver, COM webhooks, raise/clear behavior, and target delivery.
 
@@ -746,8 +710,8 @@ Some platforms are particularly tenant-specific. Examples include:
 - BMC Helix status, impact, and urgency values
 - Microsoft Sentinel / Log Analytics custom-table conventions
 
-If you can validate an adapter against a live environment, contributions, issues, and pull requests are welcome.
-
+🙋 **Volunteers welcome.** If you can validate an adapter against a live environment, contributions, issues, and pull requests are welcome.
+ 
 ---
 
 # Roadmap
