@@ -1,347 +1,913 @@
 # COM Event Bridge
 
-A **single-box, on-premises** bridge that lets HPE Compute Ops Management (COM)
-deliver webhook events straight to a target system — **no cloud, no queue, one
-container**.
+A single-box, on-premises webhook bridge for **HPE Compute Ops Management (COM)** that receives, authenticates, normalises, de-duplicates, and forwards COM events directly to ITSM, ITOM, SIEM, ChatOps, incident-response, and observability platforms — with **no managed cloud dependency**.
 
-> AI-generated reference implementation. Review and harden before production use.
+Use this deployment model when you can expose a public HTTPS endpoint that COM can reach and want the smallest infrastructure footprint.
 
-This is the companion to [com-event-relay](../com-event-relay). Both solve the
-same problem — getting COM webhook events into a system COM can't reach natively
-(OBM, ServiceNow Event Management, Splunk, a generic webhook) — but with a
-different trade-off:
-
-| | com-event-relay | **com-event-bridge (this project)** |
-|---|---|---|
-| Topology | Cloud relay + on-prem shim + queue | **One on-prem box** |
-| Cloud footprint | Required (Azure/AWS) | **None** |
-| Inbound exposure | None (shim is outbound-only) | You host the public endpoint |
-| Durability | Durable cloud queue | Local spool (optional); `sync` is best-effort |
-| Best for | Zero inbound exposure + durability | Strict no-cloud mandate, simplicity |
-
-**If your target is OpsRamp or ServiceNow incident creation, use neither** — COM
-has a native integration for those.
-
-## What it does
-
-One process folds the whole path together:
-
-```
-COM ──443──►  handshake ─► auth ─► normalize ─► deliver ──►  target
-              └────────── com-event-bridge (one box) ──────┘
-              (public DMZ HTTPS via a TLS reverse proxy in front)
-```
-
-1. **Verification handshake.** Answers COM's `GET` with the
-   `x-compute-ops-mgmt-verification-challenge` header by echoing
-   `{"verification":"<token>"}` — so COM accepts the endpoint.
-2. **Authentication.** Every event must carry a shared secret header
-   (default `x-shim-secret`), compared in **constant time**; a bad/missing secret
-   returns `401`.
-3. **Input hardening.** Bodies are capped at `MAX_BODY_BYTES` (default 256 KB,
-   `413` over that); malformed JSON is rejected with `400`.
-4. **Normalise.** The COM payload becomes a neutral `CanonicalEvent` (same model
-   and mapping as com-event-relay, so target behaviour is identical).
-5. **Deliver** via the adapter(s) named by `TARGETS` (`obm` / `servicenow` / `opsramp` / `halo` / `splunk`
-   / `github` / `slack` / `teams` / `jira` / `pagerduty` / `sentinel` / `datadog` / `elastic` / `bmc_helix` / `dynatrace` / `grafana` / `webhook`) — one target, or several comma-separated to fan out — see
-   [Delivery modes](#delivery-modes) and
-   [Delivering to multiple targets](../README.md#delivering-to-multiple-targets-at-once).
-6. **De-duplicate.** A local SQLite TTL store (keyed **per target**) suppresses
-   repeats (duplicate or redelivered events for the same fault).
-
-## Delivery modes
-
-Because there is no queue, you choose how delivery is guaranteed with
-`DELIVERY_MODE`:
-
-| Mode | Behaviour | Trade-off |
-|---|---|---|
-| **`spool`** (default) | Persist the event to a local on-disk spool (SQLite), ack COM with `202` immediately, and drain it in a **background worker** that retries with capped exponential backoff. | Survives target outages without a cloud queue; the box's disk is the buffer. **Requires a durable `SPOOL_PATH`** (see prerequisite below). |
-| **`sync`** | Forward inline. If the target fails, return `503` — but COM is **fire-and-forget** (no retries), so the event is **lost**, and sustained `5xx` from a down target risks the webhook being **disabled** in COM (10 consecutive failures). | Best-effort only; opt in with `DELIVERY_MODE=sync` where occasional loss is acceptable. |
-
-> **Prerequisite — durable spool storage.** In `spool` mode `SPOOL_PATH` **must**
-> point at persistent storage (a mounted volume), and the bridge **refuses to
-> start** if `SPOOL_PATH` is unset. An ephemeral path (e.g. `./spool.db` inside a
-> container) would silently discard the pending backlog on restart/redeploy —
-> false durability — so this is a hard fail rather than a silent footgun.
+> **Reference implementation**
 >
-> - **Container / compose:** mount a named volume at `/data`
->   ([docker-compose.yml](docker-compose.yml) already mounts `bridge-data:/data`,
->   and the image defaults `SPOOL_PATH=/data/spool.db`).
-> - **Bare metal / systemd:** set `SPOOL_PATH` to an absolute path on a
->   persistent disk, e.g. `/var/lib/com-event-bridge/spool.db`.
+> This is an open-source reference/sample implementation. Review, validate, and harden it for your own environment before production use.
 
-In `spool` mode the backlog is capped at `SPOOL_MAX_BYTES`; once exceeded, new
-events get `503` **backpressure** (dropped — COM does not retry) so a prolonged
-outage can't fill the disk. The spool is crash-safe — unsent events survive a
-restart.
+---
 
-## Endpoints
+## At a glance
+
+<img src="../docs/images/com-event-bridge-architecture.png" alt="COM Event Bridge architecture" width="800" />
+
+The Bridge is the **single-box alternative** to [`com-event-relay`](../com-event-relay/).
+
+| | `com-event-relay` | `com-event-bridge` |
+|---|---|---|
+| **Topology** | Cloud relay + durable queue + on-prem shim | One on-prem host |
+| **Cloud footprint** | Azure or AWS required | None |
+| **Inbound exposure** | None into customer network | Public HTTPS endpoint required |
+| **Durability** | Managed cloud queue | Local spool |
+| **Best for** | No inbound path + cloud durability | No-cloud mandate + simplicity |
+
+> If COM already provides a native integration for your target and that native path meets the requirement, use it. Use the Bridge when you need additional transformation, buffering, de-duplication, fan-out, lifecycle correlation, or support for a target without native COM integration.
+
+---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [When to use the Bridge](#when-to-use-the-bridge)
+- [When not to use the Bridge](#when-not-to-use-the-bridge)
+- [Delivery modes](#delivery-modes)
+- [Persistence and durability](#persistence-and-durability)
+- [Endpoints](#endpoints)
+- [Public edge and TLS](#public-edge-and-tls)
+- [High availability considerations](#high-availability-considerations)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Target adapters](#target-adapters)
+- [Secrets management](#secrets-management)
+- [Register the webhook in COM](#register-the-webhook-in-com)
+- [Production checklist](#production-checklist)
+- [Project layout](#project-layout)
+- [Relationship to com-event-core](#relationship-to-com-event-core)
+- [Relationship to com-event-relay](#relationship-to-com-event-relay)
+
+---
+
+# What it does
+
+The Bridge folds the complete receive-and-deliver pipeline into one deployment:
+
+```text
+COM
+ |
+ | HTTPS 443
+ v
+TLS reverse proxy
+ |
+ v
+Bridge
+ |
+ +--> handshake
+ +--> shared-secret authentication
+ +--> input validation
+ +--> normalize to CanonicalEvent
+ +--> de-duplicate
+ +--> correlate raise / clear
+ +--> spool or deliver
+ |
+ v
+Target adapter(s)
+ |
+ v
+Target platform(s)
+```
+
+The Bridge performs six main functions:
+
+1. **Verification handshake**  
+   Answers COM's verification `GET` by echoing the `x-compute-ops-mgmt-verification-challenge` value as:
+
+   ```json
+   {"verification":"<token>"}
+   ```
+
+2. **Authentication**  
+   Every event must carry the configured shared-secret header. The default header is:
+
+   ```text
+   x-shim-secret
+   ```
+
+   A missing or invalid secret returns `401`.
+
+3. **Input hardening**  
+   Request bodies are capped at `MAX_BODY_BYTES` and malformed JSON is rejected before processing.
+
+4. **Normalisation**  
+   The COM payload is converted to the shared `CanonicalEvent` model from [`com-event-core`](../com-event-core/).
+
+5. **De-duplication and lifecycle correlation**  
+   Repeated events are suppressed and raise/clear events use stable correlation identities.
+
+6. **Target delivery**  
+   One or more adapters selected through `TARGETS` deliver the event to the destination platform.
+
+Detailed event semantics, COM webhook filters, `SERVER_MONITORS`, correlation keys, and adapter behavior are documented centrally in:
+
+[`com-event-core/README.md`](../com-event-core/README.md)
+
+---
+
+# When to use the Bridge
+
+Use `com-event-bridge` when:
+
+- a **no-cloud** deployment is required
+- you can expose a public HTTPS endpoint that COM can reach
+- you want a single deployment rather than Relay + Queue + Shim
+- a local durable spool is sufficient
+- you want to add transformation, de-duplication, correlation, or fan-out between COM and the target
+- the target does not provide a native COM integration
+
+Typical topology:
+
+```text
+Internet
+   |
+   v
+Public DNS + TCP/443
+   |
+   v
+TLS reverse proxy
+   |
+   v
+Bridge
+   |
+   v
+Private target
+```
+
+---
+
+# When not to use the Bridge
+
+Prefer [`com-event-relay`](../com-event-relay/) when:
+
+- inbound HTTPS cannot be opened into the customer environment
+- the public edge should be hosted as a managed cloud service
+- durable queue storage outside the Bridge host is preferred
+- receive and delivery should scale independently
+- you need a stronger failure boundary between public webhook reception and internal delivery
+
+Prefer a **native COM integration** when:
+
+- COM already supports the target natively
+- that integration meets the functional requirement
+- you do not need extra transformation, buffering, fan-out, or raise/clear correlation
+
+---
+
+# Delivery modes
+
+The Bridge supports two delivery modes through:
+
+```bash
+DELIVERY_MODE=spool
+```
+
+or:
+
+```bash
+DELIVERY_MODE=sync
+```
+
+> **For production use, prefer `spool`.**
+>
+> `sync` is intended for local smoke tests or environments where occasional event loss is acceptable.
+
+---
+
+## `spool` mode — default and recommended
+
+```text
+COM
+ |
+ v
+Bridge
+ |
+ +--> persist event
+ |
+ v
+Local spool
+ |
+ +--> background worker
+ |
+ v
+Target
+```
+
+Behavior:
+
+1. validate and normalise the event
+2. write it to the local SQLite spool
+3. return `202` to COM
+4. deliver from the background worker
+5. retry failed deliveries with capped exponential backoff
+
+Benefits:
+
+- target outages do not immediately lose accepted events
+- pending events survive a Bridge process restart
+- multi-target partial failures can be retried safely
+- no cloud queue is required
+
+Trade-off:
+
+- the Bridge host's disk becomes part of the durability model
+
+---
+
+## `sync` mode — best effort
+
+```text
+COM
+ |
+ v
+Bridge
+ |
+ v
+Target
+```
+
+The Bridge forwards inline.
+
+If the target fails:
+
+```text
+Bridge -> 503
+```
+
+but COM does **not** retry the webhook delivery, so the event is lost.
+
+Use `sync` only where:
+
+- this behavior is acceptable
+- you are smoke-testing
+- the target is non-critical
+
+---
+
+# Persistence and durability
+
+## Persistent state
+
+Treat `/data` as part of the Bridge's durable state.
+
+Typical container layout:
+
+```text
+/data
+ ├── spool.db
+ └── dedup.db
+```
+
+The container image defaults to:
+
+```text
+SPOOL_PATH=/data/spool.db
+DEDUP_DB_PATH=/data/dedup.db
+```
+
+A persistent volume must therefore be mounted at `/data`.
+
+---
+
+## Spool prerequisite
+
+In `spool` mode, `SPOOL_PATH` must point to durable storage.
+
+The Bridge refuses to start if spool mode is enabled without a configured persistent spool path.
+
+This prevents false durability such as:
+
+```text
+./spool.db
+```
+
+inside an ephemeral container filesystem.
+
+Recommended examples:
+
+### Docker / Compose
+
+```text
+/data/spool.db
+```
+
+with a named volume:
+
+```bash
+-v bridge-data:/data
+```
+
+### Bare metal / systemd
+
+```text
+/var/lib/com-event-bridge/spool.db
+```
+
+on persistent storage.
+
+---
+
+## Spool capacity and event loss
+
+The backlog is capped by:
+
+```text
+SPOOL_MAX_BYTES
+```
+
+When the spool reaches that limit, the Bridge returns:
+
+```text
+503
+```
+
+for new events.
+
+> **Important**
+>
+> This `503` protects the Bridge host from disk exhaustion, but it does **not** preserve the incoming COM event. COM does not retry failed webhook deliveries.
+>
+> Once the spool is full, new events are intentionally dropped.
+
+This means spool capacity and backlog growth should be monitored in production.
+
+---
+
+## Multi-target retries
+
+In spool mode, delivery state is tracked per adapter.
+
+Example:
+
+```text
+ServiceNow -> success
+Splunk     -> success
+PagerDuty  -> failure
+```
+
+On retry:
+
+```text
+ServiceNow -> skipped
+Splunk     -> skipped
+PagerDuty  -> retried
+```
+
+This avoids duplicating successful target deliveries.
+
+The shared delivery semantics are implemented in [`com-event-core`](../com-event-core/).
+
+---
+
+# Endpoints
 
 | Request | Response |
 |---|---|
-| Handshake (`x-compute-ops-mgmt-verification-challenge`) | `200` + `{"verification":"<token>"}` |
-| `POST` with valid secret — `sync` delivered | `202` (+ `x-bridge-event-id`) |
-| `POST` with valid secret — `spool` accepted | `202` (+ `x-bridge-event-id`) |
-| `POST`, duplicate (dedup) | `200` |
-| `POST` missing/invalid secret | `401` |
-| `POST` body over `MAX_BODY_BYTES` | `413` |
-| `POST` malformed JSON | `400` |
-| `POST`, `sync`, target unavailable | `503` (event lost — COM does not retry) |
-| `POST`, `spool`, backlog full | `503` (dropped — COM does not retry) |
-| `GET /healthz` (liveness) | `200` |
-| `GET /readyz` (readiness) | `200` ready / `503` (spool worker down) |
+| Handshake with `x-compute-ops-mgmt-verification-challenge` | `200` + `{"verification": "<token>"}` |
+| Valid `POST`, `sync` delivered | `202` + `x-bridge-event-id` |
+| Valid `POST`, `spool` accepted | `202` + `x-bridge-event-id` |
+| Duplicate event | `202` — accepted, then suppressed by de-duplication at delivery |
+| `GET` without the challenge header | `400` |
+| Missing / invalid shared secret | `401` |
+| Body over `MAX_BODY_BYTES` | `413` |
+| Malformed JSON | `400` |
+| `sync`, target unavailable | `503` — event lost |
+| `spool`, backlog full | `503` — event dropped |
+| `GET /healthz` | `200` |
+| `GET /readyz` | `200` ready / `503` if spool worker is unhealthy |
 
-## What you own (this is the public edge)
+---
 
-Unlike com-event-relay — where the cloud platform provides the public URL, TLS,
-patching and autoscaling — **the bridge is the internet-facing endpoint**, so you
-operate:
-- a **public DNS name** and **inbound `443`** open to COM's egress;
-- a **TLS reverse proxy** in front (nginx/Caddy) as the certificate terminator —
-  see [deploy/nginx](deploy/nginx/com-event-bridge.conf);
-- the **CA certificate lifecycle** (issuance + renewal) — the compose stack wires
-  up certbot for this;
-- **durable spool storage** (a mounted volume for `SPOOL_PATH`) in the default
-  `spool` mode — the bridge won't start without it;
-- host hardening, patching, and (if you need it) HA — see [HARDENING.md](HARDENING.md).
+# Public edge and TLS
 
-## Quick start
+The Bridge is intended to run **behind a TLS reverse proxy**.
 
-> **Full end-to-end runbook:** for a complete walk-through — DNS + TLS/cert
-> bootstrap, wiring the COM webhook (raise **and** clear), and an end-to-end
-> GitHub Issues test — see
-> [docs/Deploy-End-to-End-On-Prem.md](docs/Deploy-End-to-End-On-Prem.md). The
-> quick start below is the condensed version.
+Recommended trust boundary:
 
-### Run locally (sync mode)
+```text
+Internet
+   |
+   v
+nginx / Caddy
+   |
+   | private container network
+   v
+Bridge :8080
+   |
+   v
+Target
+```
 
-The default mode is `spool`, which requires a durable `SPOOL_PATH`. For a quick
-local smoke test of the handshake and auth, opt into best-effort `sync` so no
-spool volume is needed:
+The Bridge application itself does not need to terminate public TLS directly.
+
+The reverse proxy should own:
+
+- TCP/443
+- CA-signed TLS certificate
+- public hostname
+- TLS policy
+- optional source-IP restrictions
+- request forwarding to the Bridge's private port
+
+Unlike `com-event-relay`, the public edge is operated by you.
+
+You own:
+
+- public DNS
+- inbound TCP/443 connectivity
+- reverse proxy configuration
+- certificate issuance and renewal
+- host patching
+- persistent storage
+- monitoring
+- backup/recovery strategy
+- HA if required
+
+See:
+
+[`HARDENING.md`](HARDENING.md)
+
+and:
+
+[`deploy/nginx/`](deploy/nginx/)
+
+for deployment guidance.
+
+---
+
+# High availability considerations
+
+The default Bridge deployment is **stateful and single-instance**.
+
+Its default local state includes:
+
+- SQLite spool
+- SQLite de-duplication database
+
+Running multiple independent Bridge replicas does **not** automatically create a safe HA design.
+
+Without shared state or an external coordination layer, multiple replicas can introduce:
+
+- inconsistent spool ownership
+- duplicate processing
+- inconsistent de-duplication state
+- race conditions during failover
+
+Therefore:
+
+> Treat the Bridge as a single-instance deployment unless you deliberately add an external HA and shared-state design.
+
+If high availability across host failure is a primary requirement, the Relay + managed queue architecture is often the better fit.
+
+---
+
+# Quick start
+
+> For the full end-to-end runbook, including DNS, TLS/certificate bootstrap, COM raise/clear webhooks, and a live target test, see:
+>
+> [`docs/Deploy-End-to-End-On-Prem.md`](docs/Deploy-End-to-End-On-Prem.md)
+
+---
+
+## Run locally in sync mode
+
+The default mode is `spool`, which requires persistent storage.
+
+For a quick local handshake/auth smoke test, use best-effort `sync` mode:
 
 ```bash
 cd bridge
-cp .env.example .env        # set COM_SHARED_SECRET + TARGETS + target creds
-# for this local smoke test only, force best-effort inline delivery:
-#   set DELIVERY_MODE=sync in .env  (production should use spool + a volume)
-pip install -e ../../com-event-core   # shared normaliser/dedup/adapters (+ httpx)
+
+cp .env.example .env
+# Set:
+#   COM_SHARED_SECRET
+#   TARGETS
+#   target credentials
+#
+# For local smoke testing only:
+#   DELIVERY_MODE=sync
+
+pip install -e ../../com-event-core
 pip install -r requirements.txt
+
 DELIVERY_MODE=sync uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
-Smoke-test the handshake and a bad-secret rejection:
+Handshake test:
 
 ```bash
-curl -i localhost:8080/com/webhook -H "x-compute-ops-mgmt-verification-challenge: abc123"
-curl -i -X POST localhost:8080/com/webhook -d '{}'          # 401 (no secret)
+curl -i localhost:8080/com/webhook \
+  -H "x-compute-ops-mgmt-verification-challenge: abc123"
 ```
 
-### Run the container (spool mode, with a durable volume)
-
-In the default `spool` mode the bridge needs a **persistent volume** for the
-spool DB, otherwise it refuses to start (an ephemeral path would lose the backlog
-on restart). The image already defaults `SPOOL_PATH=/data/spool.db`, so you just
-have to mount a volume at `/data`:
+Bad-secret test:
 
 ```bash
-# Build (context is the repo root so the image includes com-event-core)
-docker build -f com-event-bridge/bridge/Dockerfile -t com-event-bridge:local .
+curl -i -X POST localhost:8080/com/webhook -d '{}'
+```
 
-# Create a named volume once — this is what makes the spool survive restarts
+Expected result:
+
+```text
+401
+```
+
+---
+
+## Run the container in spool mode
+
+Build from the repository root so the image includes `com-event-core`:
+
+```bash
+docker build \
+  -f com-event-bridge/bridge/Dockerfile \
+  -t com-event-bridge:local \
+  .
+```
+
+Create the persistent volume:
+
+```bash
 docker volume create bridge-data
+```
 
-# Run, mounting the volume at /data (matches the image's SPOOL_PATH default)
-docker run -d --name com-event-bridge \
+Run:
+
+```bash
+docker run -d \
+  --name com-event-bridge \
   -p 8080:8080 \
   -v bridge-data:/data \
   --env-file com-event-bridge/bridge/.env \
   com-event-bridge:local
 ```
 
-- `-v bridge-data:/data` is the important part — it maps the persistent volume
-  onto `/data`, where `SPOOL_PATH` (and `DEDUP_DB_PATH`) live.
-- Prefer a **named volume** (`bridge-data`) as above; a host path also works
-  (e.g. `-v /srv/com-event-bridge:/data`), just make sure the directory is
-  writable by uid `10001` (the non-root user in the image).
-- To point the spool elsewhere, override both the path and the mount, e.g.
-  `-e SPOOL_PATH=/data/spool.db -v bridge-data:/data`.
-
-> This runs the bridge alone (no TLS). It still needs a TLS reverse proxy in
-> front for COM — use the full compose stack below for that.
-
-### Run the full DMZ stack (bridge + nginx TLS + certbot)
-
-Edit the server name in [deploy/nginx/com-event-bridge.conf](deploy/nginx/com-event-bridge.conf),
-bootstrap the certificate once (see [HARDENING.md](HARDENING.md)), then:
+The important part is:
 
 ```bash
-cp bridge/.env.example bridge/.env    # set secrets + target
+-v bridge-data:/data
+```
+
+because `/data` contains the spool and de-duplication databases.
+
+A host path also works:
+
+```bash
+-v /srv/com-event-bridge:/data
+```
+
+Make sure the directory is writable by UID `10001`, the non-root user in the image.
+
+> This starts the Bridge application only. It does **not** provide public TLS. Put a TLS reverse proxy in front before registering it with COM.
+
+---
+
+## Run the full DMZ stack
+
+The repository includes a Compose stack with:
+
+- Bridge
+- nginx
+- certbot
+- persistent Bridge data volume
+
+Edit the server name in:
+
+```text
+deploy/nginx/com-event-bridge.conf
+```
+
+Bootstrap the certificate as described in [`HARDENING.md`](HARDENING.md), then:
+
+```bash
+cp bridge/.env.example bridge/.env
+# Set COM_SHARED_SECRET + TARGETS + target credentials
+
 docker compose up -d --build
 ```
 
-The compose stack already declares the `bridge-data` volume and mounts it at
-`/data` for you ([docker-compose.yml](docker-compose.yml)), so the spool is
-durable out of the box.
+The Compose stack mounts `bridge-data` at `/data`, so spool and de-duplication state survive container restarts.
 
-## Configuration (env vars)
+---
 
-| Var | Required | Notes |
+# Configuration
+
+The Bridge README documents **Bridge-owned settings**.
+
+Target-specific adapter credentials and mappings are documented centrally in:
+
+[`../com-event-core/README.md`](../com-event-core/README.md)
+
+## Bridge settings
+
+| Variable | Required | Notes |
 |---|---|---|
-| `COM_SHARED_SECRET` | yes | Secret COM presents on every event. |
-| `SHARED_SECRET_HEADER` | no | Header carrying the secret. Default `x-shim-secret`. |
-| `MAX_BODY_BYTES` | no | Max request body. Default `262144` (256 KB). |
-| `DELIVERY_MODE` | no | `spool` (default, durable) or `sync` (best-effort). |
-| `SPOOL_PATH` | **yes, in `spool` mode** | Path to the spool DB on **durable** storage (mounted volume). Bridge won't start in spool mode if unset. Container default `/data/spool.db`. |
-| `SPOOL_MAX_BYTES` / `SPOOL_RETRY_SECONDS` / `SPOOL_RETRY_CAP` / `SPOOL_POLL_SECONDS` | no | Spool tuning (`spool` mode). |
-| `TARGETS` | no | Target(s): one name or comma-separated for fan-out, e.g. `halo,opsramp`. Default `webhook`. Each of `obm` / `servicenow` / `opsramp` / `halo` / `splunk` / `github` / `slack` / `teams` / `jira` / `pagerduty` / `sentinel` / `datadog` / `elastic` / `bmc_helix` / `dynatrace` / `grafana` / `webhook`. Fan-out is reliable in `spool` mode (retry re-attempts only failed targets); best-effort in `sync`. |
-| `TARGET_TIMEOUT` | no | Per-target HTTP timeout (s). Default `15`. |
-| `SERVER_MONITORS` | no | Server conditions to watch, comma-separated: `health` (default) / `power` / `connection` / `subscription`. Each opens/closes its own item. A condition **not** listed is not monitored (no item opens/closes for it, no error). |
-| `DEDUP_DB_PATH` / `DEDUP_TTL_SECONDS` | no | De-dup store + window (`0` disables). |
-| `OBM_EVENT_API_URL` / `OBM_USER` / `OBM_PASSWORD` | if `obm` in `TARGETS` | OBM Event REST API + Basic auth. |
-| `SNOW_INSTANCE` / `SNOW_USER` / `SNOW_PASSWORD` | if `servicenow` in `TARGETS` | `SNOW_TABLE` optional (`em_event` default / `incident`). |
-| `OPSRAMP_API_URL` / `OPSRAMP_TENANT_ID` / `OPSRAMP_KEY` / `OPSRAMP_SECRET` | if `opsramp` in `TARGETS` | OAuth2 client-credentials; `OPSRAMP_SERVICE_NAME` optional. |
-| `HALO_API_URL` / `HALO_CLIENT_ID` / `HALO_CLIENT_SECRET` | if `halo` in `TARGETS` | OAuth2 client-credentials; `HALO_TENANT` / `HALO_TICKET_TYPE_ID` optional. |
-| `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN` | if `splunk` in `TARGETS` | HEC endpoint + token. |
-| `GITHUB_REPO` / `GITHUB_TOKEN` | if `github` in `TARGETS` | `owner/repo` + PAT (`issues:write`); `GITHUB_API_URL` (GHE) / `GITHUB_LABELS` optional. |
-| `SLACK_WEBHOOK_URL` | if `slack` in `TARGETS` | Incoming Webhook URL; `SLACK_USERNAME` optional. |
-| `TEAMS_WEBHOOK_URL` | if `teams` in `TARGETS` | Teams Workflows / Power Automate webhook URL. |
-| `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` / `JIRA_PROJECT_KEY` | if `jira` in `TARGETS` | Jira Cloud site + Basic auth; `JIRA_ISSUE_TYPE` / `JIRA_CLOSE_TRANSITION` / `JIRA_LABELS` optional. |
-| `PAGERDUTY_ROUTING_KEY` | if `pagerduty` in `TARGETS` | Events API v2 integration key; `PAGERDUTY_API_URL` (EU) optional. |
-| `SENTINEL_WORKSPACE_ID` / `SENTINEL_SHARED_KEY` | if `sentinel` in `TARGETS` | Log Analytics workspace + key; `SENTINEL_LOG_TYPE` optional. |
-| `DATADOG_API_KEY` | if `datadog` in `TARGETS` | API key; `DATADOG_SITE` / `DATADOG_TAGS` optional. |
-| `ELASTIC_URL` / `ELASTIC_API_KEY` | if `elastic` in `TARGETS` | Cluster URL + API key (or `ELASTIC_USER`/`ELASTIC_PASSWORD`); `ELASTIC_INDEX` optional. |
-| `BMC_HELIX_URL` / `BMC_HELIX_USER` / `BMC_HELIX_PASSWORD` | if `bmc_helix` in `TARGETS` | AR System REST base + JWT auth; `BMC_HELIX_SERVICE_TYPE` / `BMC_HELIX_ASSIGNED_GROUP` / `BMC_HELIX_STATUS_RESOLVED` optional. |
-| `DYNATRACE_URL` / `DYNATRACE_API_TOKEN` | if `dynatrace` in `TARGETS` | Environment API base + token (`events.ingest`); `DYNATRACE_ENTITY_SELECTOR` / `DYNATRACE_PROPERTIES` optional. |
-| `GRAFANA_LOKI_URL` / `GRAFANA_LOKI_USER` / `GRAFANA_API_TOKEN` | if `grafana` in `TARGETS` | Grafana Cloud Logs (Loki) URL + user id + token (`logs:write`); `GRAFANA_LABELS` optional. |
-| `WEBHOOK_URL` | if `webhook` in `TARGETS` | Optional `WEBHOOK_AUTH_HEADER`/`_VALUE`. |
+| `COM_SHARED_SECRET` | Yes | Secret COM sends with every event |
+| `SHARED_SECRET_HEADER` | No | Header carrying the shared secret. Default `x-shim-secret` |
+| `MAX_BODY_BYTES` | No | Maximum request body. Default `262144` |
+| `DELIVERY_MODE` | No | `spool` default, or `sync` |
+| `SPOOL_PATH` | Yes in spool mode | Persistent SQLite spool path. Container default `/data/spool.db` |
+| `SPOOL_MAX_BYTES` | No | Maximum local spool size |
+| `SPOOL_RETRY_SECONDS` | No | Initial retry delay |
+| `SPOOL_RETRY_CAP` | No | Maximum retry delay |
+| `SPOOL_POLL_SECONDS` | No | Background spool worker poll interval |
+| `TARGETS` | No | One or more adapter names. Default `webhook` |
+| `TARGET_TIMEOUT` | No | Per-target HTTP timeout. Default `15` seconds |
+| `SERVER_MONITORS` | No | COM server conditions to monitor. See Core README |
+| `DEDUP_DB_PATH` | No | SQLite de-duplication database |
+| `DEDUP_TTL_SECONDS` | No | De-duplication window; `0` disables |
 
-> **Every secret above can be read from a file instead of the environment** —
-> see [Secrets management](#secrets-management).
+Example:
 
-## Secrets management
+```bash
+TARGETS=servicenow
+```
 
-Sensitive values — `COM_SHARED_SECRET`, the target passwords / client secrets /
-tokens (`OBM_PASSWORD`, `SNOW_PASSWORD`, `OPSRAMP_KEY`/`OPSRAMP_SECRET`,
-`HALO_CLIENT_ID`/`HALO_CLIENT_SECRET`, `SPLUNK_HEC_TOKEN`, `GITHUB_TOKEN`,
-`SLACK_WEBHOOK_URL`, `TEAMS_WEBHOOK_URL`, `JIRA_API_TOKEN`, `PAGERDUTY_ROUTING_KEY`,
-`SENTINEL_SHARED_KEY`, `DATADOG_API_KEY`, `ELASTIC_API_KEY`/`ELASTIC_PASSWORD`,
-`BMC_HELIX_PASSWORD`, `DYNATRACE_API_TOKEN`, `GRAFANA_API_TOKEN`,
-`WEBHOOK_AUTH_VALUE`)
-— should **not** live in a plaintext `.env` in production. Every one of them can
-instead be read from a **file**, so you can back them with a vault or the
-platform's native secret store.
+or:
 
-**How it works.** For any secret `<NAME>`, the bridge resolves it in this order:
+```bash
+TARGETS=servicenow,splunk
+```
 
-1. `<NAME>_FILE` — if set, the secret is the **contents of that file** (a trailing
-   newline is stripped);
-2. `<NAME>` — otherwise the plain environment variable (handy for local dev);
-3. otherwise startup **fails fast** with a clear "missing secret" error.
+or:
 
-So you keep the value out of the environment entirely by pointing `<NAME>_FILE` at a
-path your deployment projects onto disk. Reading a file avoids the value leaking
-into `docker inspect`, `/proc/<pid>/environ`, or child processes.
+```bash
+TARGETS=sentinel,pagerduty,teams
+```
 
-### Docker Compose / Swarm secrets
+For the current adapter list and required target credentials, see:
 
-*Use this if you run the bridge with `docker compose` (the default deployment).*
+[`com-event-core — Supported adapters`](../com-event-core/README.md#supported-adapters)
 
-Docker mounts each secret at `/run/secrets/<name>` on **tmpfs** (never in the
-image or `docker inspect`). In [docker-compose.yml](docker-compose.yml), uncomment
-the `secrets:` blocks and set the `*_FILE` vars (and remove those secrets from
-`bridge/.env`):
+---
+
+# Target adapters
+
+The Bridge does not implement target adapters itself.
+
+It loads them from:
+
+```text
+com-event-core
+```
+
+That package owns:
+
+- `CanonicalEvent`
+- COM resource normalisation
+- `SERVER_MONITORS`
+- raise/clear correlation
+- per-target de-duplication
+- multi-target fan-out
+- partial-failure behavior
+- all built-in adapters
+- target-specific configuration guidance
+
+This avoids duplicating adapter documentation between Relay and Bridge.
+
+---
+
+# Secrets management
+
+Sensitive values should not be stored in a plaintext `.env` in production.
+
+The Bridge and shared adapters support two forms for a secret named:
+
+```text
+NAME
+```
+
+Resolution order:
+
+1. `NAME_FILE`
+2. `NAME`
+3. otherwise startup fails
+
+Example:
+
+```text
+COM_SHARED_SECRET_FILE=/run/secrets/com_shared_secret
+```
+
+This allows the secret value itself to stay outside the process environment.
+
+---
+
+## Docker Compose / Swarm secrets
+
+Example:
 
 ```yaml
 services:
   bridge:
     environment:
       COM_SHARED_SECRET_FILE: /run/secrets/com_shared_secret
-      OBM_PASSWORD_FILE: /run/secrets/obm_password
-    secrets: [com_shared_secret, obm_password]
+    secrets:
+      - com_shared_secret
+
 secrets:
   com_shared_secret:
-    file: ./secrets/com_shared_secret.txt   # or `external: true` on Swarm
-  obm_password:
-    file: ./secrets/obm_password.txt
+    file: ./secrets/com_shared_secret.txt
 ```
 
-Create the files (`0400`, git-ignored) or, on Swarm,
-`docker secret create com_shared_secret ./com_shared_secret.txt` and use
-`external: true`.
+Use restrictive permissions on source secret files and keep them out of Git.
 
-### systemd `LoadCredential` (bare metal, no Docker)
+---
 
-*Use this if you run the bridge directly on a Linux host via systemd (no Docker).*
+## systemd `LoadCredential`
 
-systemd copies each credential into a private, per-service `0400` tmpfs dir
-exposed as `$CREDENTIALS_DIRECTORY` (`%d`). In
-[deploy/systemd/com-event-bridge.service](deploy/systemd/com-event-bridge.service),
-uncomment:
+For a bare-metal deployment:
 
 ```ini
 LoadCredential=com_shared_secret:/etc/com-event-bridge/com_shared_secret
-LoadCredential=obm_password:/etc/com-event-bridge/obm_password
 Environment=COM_SHARED_SECRET_FILE=%d/com_shared_secret
-Environment=OBM_PASSWORD_FILE=%d/obm_password
 ```
 
-Write the source files as `root:0400`, then drop those secrets from
-`bridge.env`. For encryption-at-rest (TPM / host key) use
-`LoadCredentialEncrypted=` with `systemd-creds encrypt`.
+For encrypted credentials, consider:
 
-### HashiCorp Vault (on-prem)
-
-*Use this only if your site already runs HashiCorp Vault.*
-
-Run the **Vault Agent** alongside the bridge and render a secret to a tmpfs file
-with an Agent template, then point the `*_FILE` var at it — e.g. template
-`{{ with secret "secret/com-bridge" }}{{ .Data.data.com_shared_secret }}{{ end }}`
-to `/run/com-bridge/com_shared_secret`, and set
-`COM_SHARED_SECRET_FILE=/run/com-bridge/com_shared_secret`. Agent handles renewal;
-the bridge just re-reads the file at startup. (For Kubernetes, the Vault Agent
-Injector or the Secrets Store CSI driver mount files the same way.)
-
-## Register the webhook in COM
-
-Point a COM webhook at your public bridge URL with the shared-secret header:
-
-- `destination` = `https://com-bridge.example.com/com/webhook`
-- `headers` = `x-shim-secret: <COM_SHARED_SECRET>`
-- `eventFilter` = your chosen filter
-
-COM sends the handshake, the bridge echoes the token, and the webhook goes
-`ACTIVE` / `ENABLED`.
-
-## Project layout
-
+```text
+LoadCredentialEncrypted=
 ```
+
+with `systemd-creds`.
+
+---
+
+## HashiCorp Vault
+
+If Vault is already available in the environment, a Vault Agent can render secrets to files and the Bridge can consume them through `*_FILE`.
+
+Example:
+
+```text
+COM_SHARED_SECRET_FILE=/run/com-bridge/com_shared_secret
+```
+
+The same pattern can be used with Kubernetes secret projections and CSI drivers.
+
+---
+
+# Register the webhook in COM
+
+Point the COM webhook at the public Bridge URL.
+
+Example:
+
+```text
+destination = https://com-bridge.example.com/com/webhook
+```
+
+Configure the shared-secret header:
+
+```text
+x-shim-secret: <COM_SHARED_SECRET>
+```
+
+and the desired:
+
+```text
+eventFilter
+```
+
+COM performs the verification handshake first.
+
+Once the Bridge echoes the verification token correctly, the webhook can become active.
+
+For detailed server-health, power, connection, subscription, alert, raise, and clear filter examples, see:
+
+[`com-event-core — COM webhook filters and raise / clear lifecycle`](../com-event-core/README.md#com-webhook-filters-and-raise--clear-lifecycle)
+
+---
+
+# Production checklist
+
+Before using the Bridge for production delivery, confirm:
+
+- [ ] public DNS resolves to the reverse proxy
+- [ ] TCP/443 is reachable from COM
+- [ ] a valid CA-signed certificate is installed
+- [ ] certificate renewal is automated
+- [ ] `COM_SHARED_SECRET` is configured
+- [ ] secrets use `*_FILE` or another secret-management mechanism
+- [ ] `DELIVERY_MODE=spool`
+- [ ] `/data` is mounted on persistent storage
+- [ ] `SPOOL_PATH` is durable
+- [ ] `DEDUP_DB_PATH` is durable
+- [ ] spool capacity is monitored
+- [ ] `/healthz` is monitored
+- [ ] `/readyz` is monitored
+- [ ] raise and clear are tested end-to-end
+- [ ] target outage and recovery are tested
+- [ ] host patching and hardening are defined
+- [ ] backup / recovery expectations for Bridge state are understood
+- [ ] HA requirements have been assessed
+
+---
+
+# Project layout
+
+```text
 com-event-bridge/
-  bridge/
-    app.py                 # single-process: handshake + auth + normalize + deliver
-    core/
-      spool.py             # durable on-disk spool + background retry worker
-    Dockerfile
-    requirements.txt
-    .env.example
-  deploy/
-    nginx/com-event-bridge.conf     # TLS reverse proxy
-    systemd/com-event-bridge.service # bare-host service unit
-  docker-compose.yml       # bridge + nginx + certbot (auto-renew)
-  HARDENING.md             # DMZ + TLS + cert lifecycle + host hardening
-  README.md
+├── bridge/
+│   ├── app.py
+│   ├── core/
+│   │   └── spool.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── .env.example
+│
+├── deploy/
+│   ├── nginx/
+│   │   └── com-event-bridge.conf
+│   └── systemd/
+│       └── com-event-bridge.service
+│
+├── docs/
+│   └── Deploy-End-to-End-On-Prem.md
+│
+├── docker-compose.yml
+├── HARDENING.md
+└── README.md
 ```
 
-The COM normaliser, de-dup store, and target adapters come from the shared
-**[com-event-core](../com-event-core)** package (see below) — they are not
-vendored here.
+Bridge-specific code is intentionally small:
 
-## Relationship to com-event-relay
+- `bridge/app.py` — webhook handshake, authentication, request handling, and delivery orchestration
+- `bridge/core/spool.py` — local durable spool and retry worker
 
-The normaliser, de-dup store, and all target adapters are **not** duplicated here
-— they live in the shared **[com-event-core](../com-event-core)** package that both
-this project and com-event-relay depend on, so a mapping or adapter fix is made
-once. The only bridge-specific code is [app.py](bridge/app.py) (single-process
-handshake + auth + deliver) and [core/spool.py](bridge/core/spool.py) (the local
-durable buffer that replaces the cloud queue). New target adapters are contributed
-to `com-event-core` and become available to both projects automatically.
+Shared event-processing logic lives in `com-event-core`.
+
+---
+
+# Relationship to com-event-core
+
+[`com-event-core`](../com-event-core/) contains:
+
+- COM normalisation
+- `CanonicalEvent`
+- de-duplication
+- correlation
+- server-condition handling
+- adapter registry
+- target adapters
+- multi-target delivery logic
+- secret helpers
+
+The Bridge imports this package rather than copying the logic.
+
+Therefore:
+
+```text
+adapter fix
+   |
+   v
+com-event-core
+   |
+   +--> com-event-bridge
+   |
+   +--> com-event-relay shim
+```
+
+A new target adapter added to `com-event-core` becomes available to both deployment models.
+
+---
+
+# Relationship to com-event-relay
+
+Both projects solve the same functional problem but use different failure and network boundaries.
+
+```text
+Bridge
+------
+COM -> public customer endpoint -> local spool -> target
+```
+
+```text
+Relay
+-----
+COM -> managed cloud endpoint -> cloud queue -> outbound-only shim -> target
+```
+
+Choose **Bridge** when:
+
+- no managed cloud should be used
+- public HTTPS ingress is acceptable
+- local host durability is sufficient
+- simplicity is the priority
+
+Choose **Relay + Shim** when:
+
+- no inbound connection into the customer network is allowed
+- managed cloud ingress is preferred
+- cloud-queue durability is preferred
+- the public receiver and internal delivery path should be decoupled
