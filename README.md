@@ -4,9 +4,12 @@ Securely integrate **HPE Compute Ops Management (COM)** webhook events with **IT
 
 The framework uses a shared `CanonicalEvent` model and pluggable target adapters, so COM-specific processing is implemented once and the same delivery logic can be reused across many operational platforms.
 
+It ships as **ready-to-run, multi-architecture container images** (published to GHCR) that are configured entirely through environment variables and secrets — deploy quickly by passing your own parameters, with no code changes and nothing to build first.
+
 > **Reference implementation**
 >
 > This repository provides open-source reference/sample implementations for HPE Compute Ops Management event integrations. It is **not an officially supported HPE product**. It is intended to demonstrate, accelerate, and simplify COM integration patterns and can be forked or adapted for specific environments.
+
 
 ---
 
@@ -125,6 +128,30 @@ CanonicalEvent -> target API
 ```
 
 The COM receiver does not need to be redesigned for every new target.
+
+### Ready-to-deploy containerized solution
+
+The Relay, Shim, and Bridge are packaged as ready-to-run container images, so deployment is quick and consistent across environments. All settings are supplied through configuration — the same images run everywhere without code changes.
+
+- **Fast deployment** — prebuilt images start with a single run command; nothing to compile or package first.
+- **Consistent runtime** — the same image behaves identically across development, test, and production.
+- **Minimal host dependencies** — no language runtime or libraries to install on the host; only a container engine is required.
+- **Simple upgrades** — move to a new version by pulling an updated image tag.
+- **Easy rollback** — return to a previous version by redeploying an earlier image tag.
+- **Portable deployment** — the same images run on-premises or on supported cloud platforms; only the supplied configuration changes.
+- **Automation-friendly** — configuration through environment variables and secrets fits naturally into CI/CD and infrastructure-as-code workflows.
+
+All deployment-specific behavior is supplied through configuration, including:
+
+- COM shared secret
+- deployment mode
+- Azure / AWS queue settings
+- target selection
+- target credentials
+- server conditions to monitor
+- de-duplication settings
+- delivery and timeout settings
+
 
 ### Secure outbound-only option
 
