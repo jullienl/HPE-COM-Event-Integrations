@@ -534,15 +534,10 @@ The repository includes end-to-end deployment runbooks for both supported cloud 
 
 ## Azure
 
-See:
-
-```text
-docs/Deploy-End-to-End-to-Azure.md
-```
+See [Deploy-End-to-End-to-Azure.md](docs/Deploy-End-to-End-to-Azure.md).
 
 Typical flow:
 
-```text
 1. Create Azure resource group
 2. Create Service Bus namespace + queue
 3. Build/publish Relay image
@@ -551,21 +546,15 @@ Typical flow:
 6. Start Shim on-prem
 7. Register COM webhook
 8. Test raise and clear
-```
 
 ---
 
 ## AWS
 
-See:
-
-```text
-docs/Deploy-End-to-End-to-AWS.md
-```
+See [Deploy-End-to-End-to-AWS.md](docs/Deploy-End-to-End-to-AWS.md).
 
 Typical flow:
 
-```text
 1. Create SQS queue
 2. Create IAM roles/policies
 3. Build/publish Relay image
@@ -574,7 +563,6 @@ Typical flow:
 6. Start Shim on-prem
 7. Register COM webhook
 8. Test raise and clear
-```
 
 ---
 
