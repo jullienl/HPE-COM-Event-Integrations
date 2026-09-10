@@ -122,6 +122,28 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   delivery** — dedup suppresses the steady-state repeats and the adapter close is
   a no-op when nothing is open. Expected, not a bug.
 
+## Runbook curl bodies + invalid-JSON dead-letter (docs)
+
+- **A typeless payload is NOT an error.** `normalize()` dispatches on `type`
+  (`.../server`, `.../alert`) and **falls back to `_normalize_generic()` for
+  anything else — nothing is dropped**. A body like `{"id":"ping"}` becomes a
+  valid generic `CanonicalEvent` and would *open* an item; it does not fail.
+- **The shim dead-letters INVALID JSON immediately** (first delivery, reason
+  `invalid-json`) in [worker.py](../com-event-relay/shim/worker.py) — this is
+  distinct from the `abandon`→redelivery path (transient target failure, ~10
+  tries before Service Bus/SQS dead-letters). So a lone `Dlq=1` right after a
+  smoke test usually means a malformed body was enqueued, not a target outage.
+- **PowerShell single-quoted curl JSON bodies keep backslashes LITERALLY.**
+  `-d '{\"id\":\"ping\"}'` posts the bytes `{\"id\":\"ping\"}` (invalid JSON) →
+  relay returns `202` (it never parses the body, just enqueues) → shim
+  dead-letters `invalid-json`. In runbook `curl.exe` examples use `-d '{}'`
+  (valid, no embedded-quote escaping) or write a fixture file and `--data
+  "@file.json"` (the Path B pattern). Never document `'{\"...\"}'` for a
+  PowerShell body.
+- General rule: the relay enqueues bytes without validating them, so any
+  documented POST body must itself be valid JSON — the failure surfaces later
+  (and confusingly) at the shim as a dead-letter, not at the relay.
+
 ## Build / structure quick facts
 
 - Monorepo, self-contained Docker builds: build context is the **repo root**;

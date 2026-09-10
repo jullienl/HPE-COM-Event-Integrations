@@ -34,6 +34,7 @@ It contains the COM event normalisation, `CanonicalEvent` model, de-duplication,
 - [Delivering to multiple targets](#delivering-to-multiple-targets)
 - [Supported adapters](#supported-adapters)
   - [Adapter reference table](#adapter-reference-table)
+  - [Finding an adapter's environment variables](#finding-an-adapters-environment-variables)
 - [Known per-target tuning](#known-per-target-tuning)
 - [Usage](#usage)
 - [Example: COM event to CanonicalEvent](#example-com-event-to-canonicalevent)
@@ -604,6 +605,54 @@ The **Category** column groups adapters by the kind of platform they target:
 >
 > 🙋 Contributions and live-tenant validation feedback are welcome. If you face any issue with an adapter integration, please [open an issue](https://github.com/jullienl/HPE-COM-Event-Integrations/issues) in the project.
 
+## Finding an adapter's environment variables
+
+Once you've picked a target from the table above, here's how to learn exactly
+which variables it needs when you start the container.
+
+**The catalog: the `.env.example` for whatever you run.** Every adapter has its
+own clearly-marked block, headed with its selector name in parentheses (the exact
+value you put in `TARGETS`), and comments flag which vars are **required**,
+**optional** (with defaults), and **secrets**:
+
+- Relay + Shim (cloud): [`shim/.env.example`](../com-event-relay/shim/.env.example)
+- Bridge (on-prem single box): [`bridge/.env.example`](../com-event-bridge/bridge/.env.example)
+
+```text
+# --- Target: GitHub Issues (github) ---------------------------------------
+# GITHUB_REPO=owner/repo         # slug only, NOT a URL (required)
+# GITHUB_TOKEN=change-me         # issues:write (secret; prefer GITHUB_TOKEN_FILE)
+# GITHUB_API_URL=...             # optional (GitHub Enterprise Server)
+# GITHUB_LABELS=ops,com          # optional extra labels on new issues
+```
+
+**The four steps:**
+
+1. **Pick the adapter name** — the value for `TARGETS` (e.g. `TARGETS=halo`, or
+   fan-out `TARGETS=halo,slack`). Valid names are the ones in the list above.
+2. **Open the matching `.env.example`** and find the
+   `# --- Target: <Name> (<name>) ---` block.
+3. **Set every var marked required**, plus any optional overrides. Pass them to
+   the container as `-e VAR=value` (or an env file).
+4. **For secrets, prefer the `<NAME>_FILE` form**
+   (e.g. `GITHUB_TOKEN_FILE=/run/secrets/github-token`) so they don't leak via
+   `docker inspect` — see [Secrets](#secrets).
+
+**The source of truth: the adapter file itself.** Each adapter reads its own
+vars at construction in [`com_event_core/adapters/`](com_event_core/adapters/) —
+one file per adapter (e.g. `github.py`, `halo.py`). The pattern is consistent, so
+one file shows its full contract in a few lines:
+
+- `os.environ["VAR"]` → **required** (fails fast if missing)
+- `os.environ.get("VAR", "default")` → **optional** with a default
+- `get_secret("VAR")` → **secret** (accepts `VAR` or `VAR_FILE`)
+
+> **Two gotchas.** Only `github` is validated end-to-end, so instance-specific
+> vars (Halo status ids, Jira transition, ServiceNow table, …) may need tuning
+> for your system — see [Known per-target tuning](#known-per-target-tuning). And
+> because config uses fixed global var names (`GITHUB_REPO`), you can't run two
+> instances of the **same** adapter type with different settings yet.
+
 ---
 
 # Known per-target tuning
@@ -729,7 +778,7 @@ correlation_key = server:CZ2311004G:health
 # What each adapter sends
 
 For the same server-health raise above, this is the object each adapter builds
-and delivers. These are hand-checked snapshots for quick reading; run
+and delivers. These are hand-checked snapshots for quick reading; refer to 
 [`examples/dump_payloads.py`](#inspecting-adapter-payloads) to see the mapping for
 the current code and for the clear/alert variants.
 

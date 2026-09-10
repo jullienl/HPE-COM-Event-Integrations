@@ -313,13 +313,22 @@ correct header it returns `202` and lands a message on the queue:
 curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
   -H "content-type: application/json" -d '{}'
 
-# Expect 202 (valid secret) — enqueues a (minimal) test message
+# Expect 202 (valid secret) — same body, now WITH the secret header → enqueues a
+# minimal but VALID-JSON test message. Keep the body valid JSON: the relay
+# enqueues bytes without parsing, but the shim parses it later, and an invalid
+# body is dead-lettered as `invalid-json` (shows up as Dlq=1). 
 curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
-  -H "content-type: application/json" -H "$HDR`: $SECRET" -d '{\"id\":\"ping\"}'
+  -H "content-type: application/json" -H "$HDR`: $SECRET" -d '{}'
 ```
 
 > The relay validates the secret with a constant-time compare and caps the body
 > at `MAX_BODY_BYTES` (default 256 KB → `413` if exceeded).
+>
+> **This `202` test leaves one real message on the queue.** When you start the
+> shim (step 5) it drains this `{}`; with no `type` it maps via the normaliser's
+> generic branch to a single harmless "COM event" item you can close — or purge
+> the queue first if you'd rather start clean. (A payload without a `type`/
+> `hardware` block is handled on purpose — nothing is dropped.)
 
 ---
 
@@ -750,14 +759,16 @@ state all come straight from the two fixtures above.
 | Issue opens but never closes | Clear not delivered / label mismatch | Confirm a *clear* event actually fired; the shim matches the open issue by its `com:<correlation_key>` label. |
 | Webhook shows WARNING/ERROR in COM | Repeated non-2xx from the relay | The relay should return `202` fast; if you see `5xx`, fix the queue first — sustained failures **disable** the webhook. |
 
+
+
 Handy log/inspection commands:
 
 ```powershell
-# 1. Is the app actually running, and what port does ingress target?
+# 1. Is the Cloud Relay app actually running in Azure, and what port does ingress target?
 az containerapp show --resource-group $RG --name $APP `
   --query "{running:properties.runningStatus, prov:properties.provisioningState, targetPort:properties.configuration.ingress.targetPort, image:properties.template.containers[0].image}" -o table
 
-# 2. The real story — the container's own logs (boot errors / tracebacks)
+# 2. The real story — the container's own logs (boot errors / tracebacks including accepted webhooks)
 az containerapp logs show --resource-group $RG --name $APP --tail 100
 
 # 3. System/platform events (image pull failures, restarts, probe failures)
@@ -766,13 +777,57 @@ az containerapp logs show --resource-group $RG --name $APP --type system --tail 
 # 4. Revision health (are replicas actually healthy?)
 az containerapp revision list --resource-group $RG --name $APP `
   --query "[].{name:name, active:properties.active, healthy:properties.healthState, replicas:properties.replicas}" -o table
+#    Look for: the ACTIVE revision has active=True, healthy=Healthy, and replicas>=1
+#    (min-replicas is 1, so a warm replica is always running). replicas=0 → nothing
+#    running (COM's single POST could be dropped); healthy=Unhealthy → replicas start
+#    but fail the readiness probe (often /readyz 503 = queue unreachable); if the
+#    active revision isn't the one with your latest image, a new deploy didn't take.
+#
+#    A healthy relay looks like this (one active, healthy revision with a warm replica):
+#    Name                          Active    Healthy    Replicas
+#    ----------------------------  --------  ---------  ----------
+#    com-event-relay--fix09080943  True      Healthy    1
+```
 
+```powershell
 # Follow the relay logs live
 az containerapp logs show --resource-group $RG --name $APP --follow
+```
 
+  > **Not a problem — expected log noise.** These relay log lines look alarming but
+  > are healthy:
+  > - **`event_type": "unknown"` on an enqueued event** — the relay reads the type
+  >   from COM's `x-compute-ops-mgmt-event-type` header and defaults to `unknown`
+  >   when it's absent (any synthetic/manual POST, or a caller that omits it). The
+  >   relay never parses the body; the real classification happens later in the
+  >   **shim**. `unknown` + `202` = accepted and queued correctly.
+  > - **`GET / HTTP/1.1 404 Not Found`** — the relay only serves `/com/webhook`,
+  >   `/healthz`, `/readyz`; hitting the base URL (browser, uptime pinger, port scan)
+  >   correctly returns `404`. Harmless.
+  > - **`azure.servicebus._pyamqp … Connection/Session/Link state changed …
+  >   CLOSE_SENT/END/DETACHED`** — the Service Bus SDK tearing down an **idle** AMQP
+  >   connection and transparently reconnecting on the next event. It's routine
+  >   lifecycle churn logged at `INFO`, not an error. The relay quiets it to
+  >   `WARNING` by default; set `AZURE_SDK_LOG_LEVEL=INFO` on the relay app to
+  >   re-enable it when diagnosing Service Bus connectivity.
+
+```powershell
 # Messages sitting in the queue / dead-letter counts
 az servicebus queue show --resource-group $RG --namespace-name $SB_NS `
-  --name $QUEUE --query "{active:messageCount, dlq:deadLetterMessageCount}" -o table
+  --name $QUEUE --query "{active:countDetails.activeMessageCount, dlq:countDetails.deadLetterMessageCount}" -o table
+# Example output — 1 event waiting for the shim to drain, none dead-lettered:
+#   Active    Dlq
+#   --------  -----
+#   1         0
+# NOTE: use countDetails.* (not the top-level messageCount/deadLetterMessageCount).
+# deadLetterMessageCount isn't a top-level field, so `dlq:deadLetterMessageCount`
+# resolves to null and `-o table` silently DROPS any all-null column — which is why
+# a Dlq column would go missing. countDetails.activeMessageCount /
+# countDetails.deadLetterMessageCount are the real paths and always populate.
+# active>0 with the shim running should drop to 0 within seconds (it's draining);
+# a steadily growing active count means the shim isn't consuming (not running /
+# wrong listen string / wrong QUEUE_NAME). 
+# dlq>0 = messages the shim abandoned repeatedly (e.g. a target that keeps failing) 
 ```
 
 ---

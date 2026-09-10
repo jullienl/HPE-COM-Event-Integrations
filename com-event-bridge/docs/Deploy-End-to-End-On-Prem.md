@@ -288,15 +288,22 @@ correct header it returns `202` and spools a message:
 curl -s -o /dev/null -w "%{http_code}\n" -X POST https://<your-fqdn>/com/webhook \
   -H "content-type: application/json" -d '{}'
 
-# Expect 202 (valid secret) — spools a (minimal) test message
+# Expect 202 (valid secret) — spools a minimal but VALID-JSON test message
 curl -s -o /dev/null -w "%{http_code}\n" -X POST https://<your-fqdn>/com/webhook \
   -H "content-type: application/json" \
-  -H "x-shim-secret: <COM_SHARED_SECRET>" -d '{"id":"ping"}'
+  -H "x-shim-secret: <COM_SHARED_SECRET>" -d '{}'
 ```
 
 > A malformed body is rejected with `400` (not spooled). The bridge validates the
 > secret with a constant-time compare and caps the body at `MAX_BODY_BYTES`
 > (default 256 KB → `413`), which nginx also enforces (`client_max_body_size`).
+>
+> **This `202` test spools one real message.** When the worker runs it delivers
+> this `{}`; with no `type` it maps via the normaliser's generic branch to a single
+> harmless "COM event" item you can close. (A payload without a `type`/`hardware`
+> block is handled on purpose — nothing is dropped. Unlike the cloud relay the
+> bridge **parses** the body at ingress, so an invalid one is rejected `400` up
+> front and never reaches the spool.)
 
 ---
 
@@ -575,11 +582,27 @@ curl -s http://127.0.0.1:8080/readyz
 # How big is the spool backlog right now?
 docker compose exec bridge python -c \
   "import sqlite3; print(sqlite3.connect('/data/spool.db').execute('select count(*), coalesce(sum(length(body)),0) from spool').fetchone())"
+# Example output — 1 event still pending in the spool, 376 bytes total:
+#   (1, 376)
+# Drops to (0, 0) once the worker delivers it. A count that only grows means the
+# worker can't deliver (target down / misconfig) — check the bridge logs above.
 
 # nginx / cert issues
 docker compose logs nginx --tail 50
 docker compose logs certbot --tail 50
 ```
+
+> **Not a problem — expected log noise.** These bridge log lines look alarming but
+> are healthy:
+> - **`event_type": "unknown"` on an accepted event** — the bridge reads the type
+>   from COM's `x-compute-ops-mgmt-event-type` header and defaults to `unknown`
+>   when it's absent (any synthetic/manual POST, or a caller that omits it). It
+>   doesn't affect delivery — the real classification happens in the normaliser
+>   from the body. `unknown` + `202` = accepted and spooled correctly.
+> - **`GET / HTTP/1.1 404 Not Found`** — the bridge only serves `/com/webhook`,
+>   `/healthz`, `/readyz`; hitting the base URL (browser, uptime pinger, port scan)
+>   correctly returns `404`. Harmless. (There's no queue/AMQP here, so none of the
+>   Service Bus connection-churn spam the Azure relay logs applies.)
 
 ---
 

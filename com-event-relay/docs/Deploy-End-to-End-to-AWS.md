@@ -406,13 +406,22 @@ correct header it returns `202` and lands a message on the queue:
 curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
   -H "content-type: application/json" -d '{}'
 
-# Expect 202 (valid secret) — enqueues a (minimal) test message
+# Expect 202 (valid secret) — same body, now WITH the secret header → enqueues a
+# minimal but VALID-JSON test message. Keep the body valid JSON: the relay
+# enqueues bytes without parsing, but the shim parses it later, and an invalid
+# body is dead-lettered as `invalid-json` (shows up as a dead-letter). 
 curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
-  -H "content-type: application/json" -H "$HDR`: $SECRET" -d '{\"id\":\"ping\"}'
+  -H "content-type: application/json" -H "$HDR`: $SECRET" -d '{}'
 ```
 
 > The relay validates the secret with a constant-time compare and caps the body
 > at `MAX_BODY_BYTES` (default 256 KB → `413` if exceeded).
+>
+> **This `202` test leaves one real message on the queue.** When you start the
+> shim (step 5) it drains this `{}`; with no `type` it maps via the normaliser's
+> generic branch to a single harmless "COM event" item you can close — or purge
+> the queue first if you'd rather start clean. (A payload without a `type`/
+> `hardware` block is handled on purpose — nothing is dropped.)
 
 ---
 
@@ -903,7 +912,7 @@ state all come straight from the two fixtures above.
 Handy log/inspection commands:
 
 ```powershell
-# 1. Is the service actually running? (Status, and the URL host)
+# 1. Is the Cloud Relay service actually running in AWS? (Status, and the URL host)
 aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGION `
   --query "Service.{status:Status, url:ServiceUrl, port:SourceConfiguration.ImageRepository.ImageConfiguration.Port}" --output table
 
@@ -916,18 +925,42 @@ aws logs tail "/aws/apprunner/$APP/*/service" --region $REGION --since 15m
 # 4. Recent deployment / status transitions
 aws apprunner list-operations --service-arn $SERVICE_ARN --region $REGION `
   --query "OperationSummaryList[].{type:Type, status:Status, started:StartedAt}" --output table
+```
 
+```powershell
 # Follow the application logs live
 aws logs tail "/aws/apprunner/$APP/*/application" --region $REGION --follow
+```
 
+  > **Not a problem — expected log noise.** These relay log lines look alarming but
+  > are healthy:
+  > - **`event_type": "unknown"` on an enqueued event** — the relay reads the type
+  >   from COM's `x-compute-ops-mgmt-event-type` header and defaults to `unknown`
+  >   when it's absent (any synthetic/manual POST, or a caller that omits it). The
+  >   relay never parses the body; the real classification happens later in the
+  >   **shim**. `unknown` + `202` = accepted and queued correctly.
+  > - **`GET / HTTP/1.1 404 Not Found`** — the relay only serves `/com/webhook`,
+  >   `/healthz`, `/readyz`; hitting the base URL (browser, uptime pinger, port scan)
+  >   correctly returns `404`. Harmless.
+  > - (SQS is HTTPS via boto3, so there's **no** AMQP connection-churn spam like the
+  >   Azure/Service Bus relay produces — nothing to quiet here.)
+
+```powershell
 # Messages waiting / in flight on the queue
 aws sqs get-queue-attributes --queue-url $QUEUE_URL --region $REGION `
   --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible `
   --query Attributes --output table
+# Example: right after the 202 test (before the shim drains) you'll see
+# ApproximateNumberOfMessages = 1 and ...NotVisible = 0; once the shim runs it drops
+# to 0 within seconds (it's draining). A steadily growing count = shim not consuming
+# (not running / wrong SQS_QUEUE_URL / IAM policy missing ReceiveMessage).
 
 # Anything captured in the dead-letter queue
 aws sqs get-queue-attributes --queue-url $DLQ_URL --region $REGION `
   --attribute-names ApproximateNumberOfMessages --query Attributes --output table
+# ApproximateNumberOfMessages should stay 0. DLQ>0 = messages the shim gave up on
+# (a target that keeps failing → ~10 abandons, or an invalid-JSON body dead-lettered
+# immediately) — inspect those separately.
 ```
 
 ---

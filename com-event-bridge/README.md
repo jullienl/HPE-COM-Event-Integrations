@@ -683,7 +683,14 @@ TARGETS=servicenow
 TARGETS=servicenow,splunk
 ```
 
-Each adapter also reads its own connection settings (URLs, credentials, tokens) from environment variables or mounted secret files — see [`com-event-core`](../com-event-core/README.md#supported-adapters).
+Each adapter also reads its own connection settings (URLs, credentials, tokens)
+from environment variables or mounted secret files. To learn exactly which vars a
+specific target needs, follow the four steps in
+[Finding an adapter's environment variables](../com-event-core/README.md#finding-an-adapters-environment-variables)
+— in short: find your adapter's `# --- Target: <Name> (<name>) ---` block in
+[`bridge/.env.example`](bridge/.env.example) (required/optional/secret are flagged
+in the comments), or read the adapter's own file in
+[`com_event_core/adapters/`](../com-event-core/com_event_core/adapters/).
 
 ---
 
