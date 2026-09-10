@@ -15,7 +15,7 @@ It ships as **ready-to-run, multi-architecture container images** (published to 
 
 ## At a glance
 
-<img src="docs/images/at-glance-diagram.png" alt="At glance architecture" width="900" />
+![At glance architecture](docs/images/at-glance-diagram.png)
 
 Two deployment models are available:
 
