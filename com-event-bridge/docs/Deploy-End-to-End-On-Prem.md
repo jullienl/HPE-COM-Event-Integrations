@@ -87,6 +87,14 @@ the API token / key / webhook URL it needs, then set that adapter's env vars in
 the bridge `.env` (see [bridge/.env.example](../bridge/.env.example) for every
 adapter's variables).
 
+> **Which env vars does my target need?** Each adapter reads its own set of
+> variables (URLs, credentials, options). To find exactly which ones — and which
+> are required vs optional vs secret — follow the four steps in
+> [Finding an adapter's environment variables](../../com-event-core/README.md#finding-an-adapters-environment-variables):
+> pick your adapter name for `TARGETS`, open its
+> `# --- Target: <Name> (<name>) ---` block in
+> [bridge/.env.example](../bridge/.env.example), and set the vars it lists (step 3).
+
 For the GitHub example:
 
 1. Create (or pick) a repository, e.g. `your-org/com-issues`.

@@ -91,6 +91,14 @@ follow **that application's own documentation** to generate the API token / key 
 webhook URL it needs, then pass it to the shim via that adapter's env vars (see
 [shim/.env.example](../shim/.env.example) for every adapter's variables).
 
+> **Which env vars does my target need?** Each adapter reads its own set of
+> variables (URLs, credentials, options). To find exactly which ones — and which
+> are required vs optional vs secret — follow the four steps in
+> [Finding an adapter's environment variables](../../com-event-core/README.md#finding-an-adapters-environment-variables):
+> pick your adapter name for `TARGETS`, open its
+> `# --- Target: <Name> (<name>) ---` block in
+> [shim/.env.example](../shim/.env.example), and set the vars it lists (step 5).
+
 For the GitHub example:
 
 1. Create (or pick) a repository, e.g. `your-org/com-issues`.
