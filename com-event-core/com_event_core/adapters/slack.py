@@ -36,6 +36,9 @@ _COLOR = {
 }
 _RESOLVED_COLOR = "#43A047"
 
+# HPE GreenLake / Compute Ops Management console (same URL for every tenant).
+_GREENLAKE_URL = "https://common.cloud.hpe.com/"
+
 
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "\u2026"
@@ -71,15 +74,19 @@ class SlackAdapter(TargetAdapter):
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": _clip(e.description, 2900)},
             })
+        elements: list[dict] = []
         if e.mgmt_url:
-            blocks.append({
-                "type": "actions",
-                "elements": [{
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Open in COM"},
-                    "url": e.mgmt_url,
-                }],
+            elements.append({
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Open iLO"},
+                "url": e.mgmt_url,
             })
+        elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Open HPE GreenLake"},
+            "url": _GREENLAKE_URL,
+        })
+        blocks.append({"type": "actions", "elements": elements})
 
         message: dict = {
             "text": header,  # fallback for notifications / no-block clients

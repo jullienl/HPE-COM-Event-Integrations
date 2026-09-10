@@ -38,6 +38,9 @@ _COLOR = {
     "normal": "good",
 }
 
+# HPE GreenLake / Compute Ops Management console (same URL for every tenant).
+_GREENLAKE_URL = "https://common.cloud.hpe.com/"
+
 
 class TeamsAdapter(TargetAdapter):
     name = "teams"
@@ -78,9 +81,15 @@ class TeamsAdapter(TargetAdapter):
             "body": body,
         }
         if e.mgmt_url:
-            card["actions"] = [
-                {"type": "Action.OpenUrl", "title": "Open in COM", "url": e.mgmt_url}
+            actions = [
+                {"type": "Action.OpenUrl", "title": "Open iLO", "url": e.mgmt_url}
             ]
+        else:
+            actions = []
+        actions.append(
+            {"type": "Action.OpenUrl", "title": "Open HPE GreenLake", "url": _GREENLAKE_URL}
+        )
+        card["actions"] = actions
         return card
 
     def forward(self, event: CanonicalEvent) -> None:
