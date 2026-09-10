@@ -128,6 +128,11 @@ or a comma-separated list:
 TARGETS=servicenow,splunk
 ```
 
+Do **not** put a space after the comma — separate the names with a bare comma
+(`TARGETS=servicenow,splunk`). A space makes the shell split the value into two
+arguments, so only the first target is applied. If you want the space for
+readability, quote the whole assignment: `-e "TARGETS=servicenow, splunk"`.
+
 If `TARGETS` is not set, the generic `webhook` adapter is used by default.
 
 ---
@@ -431,6 +436,18 @@ A condition not listed in `SERVER_MONITORS` is ignored.
 
 Because server webhooks are snapshots, a healthy condition can generate repeated clear candidates. The de-duplication layer suppresses repeated equivalent clears.
 
+> **Post-only chat adapters (`slack`, `teams`) show a `Resolved` message for every
+> enabled-but-healthy condition.** Stateful adapters (`github`, ITSM, ...) *search*
+> for the item a clear would close and silently no-op when none is open, so a
+> healthy condition is invisible there. A post-only incoming webhook has no such
+> lookup — it simply posts, so each condition in `SERVER_MONITORS` that is healthy
+> on a given snapshot produces a `✅ Resolved` post **on every delivery**. Example:
+> with `SERVER_MONITORS=health,power` a snapshot whose health is `CRITICAL` but
+> whose power is `ON` posts a critical **health** message *and* a `Resolved`
+> **power** message. This is by design (power really is healthy), just noisier on
+> chat. **Scope `SERVER_MONITORS` to only the conditions you want alerts on** —
+> e.g. `SERVER_MONITORS=health` if you only care about hardware health.
+
 ---
 
 # CanonicalEvent
@@ -525,6 +542,10 @@ TARGETS=servicenow,splunk
 TARGETS=github,slack
 TARGETS=sentinel,pagerduty,teams
 ```
+
+Separate the names with a bare comma and **no space** (`TARGETS=github,slack`). An
+unquoted space makes the shell split the value, so only the first target is
+applied — quote the whole assignment if you want the space: `-e "TARGETS=github, slack"`.
 
 De-duplication is tracked per adapter.
 

@@ -121,6 +121,17 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
 - **Stateless snapshots emit a `clear` for every healthy condition on every
   delivery** — dedup suppresses the steady-state repeats and the adapter close is
   a no-op when nothing is open. Expected, not a bug.
+- **Post-only chat adapters (`slack`/`teams`) make those healthy-condition clears
+  VISIBLE.** Stateful adapters (`github`/ITSM) *search* for the item a clear would
+  close and silently no-op when none is open, so a healthy condition is invisible.
+  A post-only incoming webhook has no lookup — it just posts, so **every enabled
+  `SERVER_MONITORS` condition that is healthy on a snapshot produces a `Resolved`
+  post on every delivery** (e.g. `SERVER_MONITORS=health,power` + a `CRITICAL`
+  health / `ON` power snapshot → a critical *health* message AND a `Resolved`
+  *power* message). By design, not a bug. Guidance: scope `SERVER_MONITORS` to the
+  conditions you actually want alerts on. General rule: a stateless `clear` is
+  invisible on stateful (search-then-close) targets but visible on post-only ones
+  — never assume adapters render clears identically.
 
 ## Runbook curl bodies + invalid-JSON dead-letter (docs)
 

@@ -662,6 +662,10 @@ TARGETS=servicenow
 TARGETS=servicenow,splunk
 ```
 
+Separate the names with a bare comma and **no space** (`TARGETS=servicenow,splunk`).
+An unquoted space makes the shell split the value, so only the first target is
+applied — quote the whole assignment if you want the space: `-e "TARGETS=servicenow, splunk"`.
+
 Each adapter also reads its own connection settings (URLs, credentials, tokens)
 from environment variables or mounted secret files. To learn exactly which vars a
 specific target needs, follow the four steps in

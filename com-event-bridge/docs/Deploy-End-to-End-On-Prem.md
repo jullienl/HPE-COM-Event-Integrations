@@ -202,9 +202,9 @@ Key env vars (full list in [bridge/.env.example](../bridge/.env.example)):
 | `DELIVERY_MODE` | `spool` | `spool` (durable, default) or `sync` (best-effort, lossy). |
 | `SPOOL_PATH` | `/data/spool.db` | **Required in spool mode**; must be on the mounted volume. |
 | `SPOOL_MAX_BYTES` | `52428800` (default) | 50 MB backlog cap → `503` backpressure over it. |
-| `TARGETS` | `github` | One name, or comma-separated to fan out (`github,slack`). |
+| `TARGETS` | `github` | One name, or comma-separated without space to fan out (`github,slack`). |
 | `GITHUB_REPO` / `GITHUB_TOKEN` | your repo + PAT | `GITHUB_REPO` is the **`owner/repo` slug only**, not a URL. Token needs **Issues: read/write**. |
-| `SERVER_MONITORS` | `health` | Watch server health (default). Add more as a **comma-separated** list — `health,power,connection,subscription`. **Each monitor you add needs a matching COM webhook** targeting this bridge. **A condition you *don't* list is simply not monitored** — no item opens or closes for it and no error is raised. |
+| `SERVER_MONITORS` | `health` | Watch server health (default). Add more as a **comma-separated** list without space — `health,power,connection,subscription`. **Each monitor you add needs a matching COM webhook** targeting this bridge. **A condition you *don't* list is simply not monitored** — no item opens or closes for it and no error is raised. **On post-only chat targets (`slack`, `teams`) each enabled-but-*healthy* condition posts a `Resolved` message on every delivery** — so a `CRITICAL` health snapshot with `SERVER_MONITORS=health,power` posts a critical *health* message **and** a `Resolved` *power* message. Scope `SERVER_MONITORS` to only what you want alerts on (stateful targets like `github` hide this by searching for an open item first). |
 | `DEDUP_TTL_SECONDS` | `3600` (default) | Suppresses duplicate/redelivered events within the window. |
 
 ---
