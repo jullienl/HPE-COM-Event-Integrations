@@ -299,6 +299,31 @@ per-adapter dedup
 
 ---
 
+## Queue consumption and delivery latency
+
+A common question is *"how often does the Shim poll the queue?"*
+
+The Shim does **not** poll on a fixed interval (ask → sleep → ask again). It uses **long polling**: it opens a receive call and the queue holds that call open until either a message arrives or a maximum wait window elapses.
+
+```text
+fixed-interval polling (NOT used):
+  ask -> "nothing" (instant) -> sleep -> ask -> ...
+  a message can wait up to one full interval before pickup
+
+long polling (used):
+  ask -> queue holds the call open ... -> message arrives -> returned immediately
+  if the window elapses empty -> return -> ask again at once
+```
+
+Consequences:
+
+- **Delivery is effectively immediate.** A queued event is returned to the Shim the moment it is enqueued — it does not wait for a timer.
+- **Fewer idle requests.** While the queue is empty, one long-poll call covers the whole wait window instead of many short "nothing" round-trips (relevant to SQS request cost).
+
+`RECEIVE_MAX_WAIT` sets only the **maximum time the queue holds an *empty* receive call before the Shim loops and re-issues it** — it is a ceiling on *idle waiting*, not a delay applied to real messages. Defaults: **20s** for SQS (the AWS long-poll maximum) and **30s** for Azure Service Bus. Lowering it does **not** speed up delivery (delivery is already immediate); it just makes the idle loop re-issue empty receives more often.
+
+---
+
 # Queue message outcomes
 
 The Shim maps processing results to queue actions.
@@ -576,35 +601,36 @@ Configuration is split by ownership.
 
 ## Relay-owned settings
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `COM_SHARED_SECRET` | Yes | Secret expected from COM |
-| `SHARED_SECRET_HEADER` | No | Shared-secret header name; default `x-shim-secret` |
-| `MAX_BODY_BYTES` | No | Maximum accepted webhook body |
-| `QUEUE_BACKEND` | Yes | `azure` or `aws` |
-| `SERVICE_BUS_CONNECTION` | Azure path | Service Bus publisher connection if not using identity |
-| `QUEUE_NAME` | Azure path | Service Bus queue name |
-| `SQS_QUEUE_URL` | AWS path | SQS queue URL |
-| `AWS_REGION` | AWS path | AWS region |
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `COM_SHARED_SECRET` | Yes | — | Secret expected from COM |
+| `SHARED_SECRET_HEADER` | No | `x-shim-secret` | Header carrying the shared secret |
+| `MAX_BODY_BYTES` | No | `262144` | Maximum accepted webhook body (256 KB) |
+| `QUEUE_BACKEND` | No | `servicebus` | Queue backend: `servicebus` or `sqs` |
+| `SERVICE_BUS_CONNECTION` | servicebus path | — | Service Bus publisher connection if not using identity |
+| `QUEUE_NAME` | servicebus path | — | Service Bus queue name (example uses `com-events`) |
+| `SQS_QUEUE_URL` | sqs path | — | SQS queue URL |
+| `AWS_REGION` | sqs path | — | AWS region |
 
-Where possible, prefer cloud workload identity over long-lived queue credentials.
+Where possible, prefer **cloud workload identity** — an Azure Managed Identity or an AWS IAM role attached to the running service — over static connection strings or access keys. The platform issues short-lived, auto-rotating tokens, so there is no long-lived queue secret to store, protect, or leak. Grant the identity least privilege on the one queue (`Send` for the Relay, `Listen` for the Shim). Fall back to a stored connection string / access key (via `SERVICE_BUS_CONNECTION` or AWS keys) only where workload identity is not available, such as local development.
 
 ---
 
 ## Shim-owned settings
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `QUEUE_BACKEND` | Yes | `azure` or `aws` |
-| `SERVICE_BUS_CONNECTION` | Azure path | Service Bus consumer connection if not using identity |
-| `QUEUE_NAME` | Azure path | Service Bus queue |
-| `SQS_QUEUE_URL` | AWS path | SQS queue URL |
-| `AWS_REGION` | AWS path | AWS region |
-| `TARGETS` | No | One or more target adapter names |
-| `TARGET_TIMEOUT` | No | Per-target HTTP timeout |
-| `SERVER_MONITORS` | No | Server conditions interpreted by Core |
-| `DEDUP_DB_PATH` | No | SQLite dedup database |
-| `DEDUP_TTL_SECONDS` | No | Deduplication retention window |
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `QUEUE_BACKEND` | No | `servicebus` | Queue backend: `servicebus` or `sqs` (must match the relay) |
+| `SERVICE_BUS_CONNECTION` | servicebus path | — | Service Bus consumer connection if not using identity |
+| `QUEUE_NAME` | servicebus path | — | Service Bus queue (example uses `com-events`) |
+| `SQS_QUEUE_URL` | sqs path | — | SQS queue URL |
+| `AWS_REGION` | sqs path | — | AWS region |
+| `TARGETS` | No | `webhook` | One or more target adapter names, comma-separated |
+| `TARGET_TIMEOUT` | No | `15` | Per-target HTTP timeout, in seconds |
+| `RECEIVE_MAX_WAIT` | No | `20` SQS / `30` Azure | Long-poll wait window per receive call, in seconds. Bounds *idle* waiting only — not a poll interval; see [Queue consumption and delivery latency](#queue-consumption-and-delivery-latency) |
+| `SERVER_MONITORS` | No | `health` | Server conditions interpreted by Core |
+| `DEDUP_DB_PATH` | No | `/data/dedup.db` | SQLite dedup database (container default) |
+| `DEDUP_TTL_SECONDS` | No | `3600` | De-duplication retention window, in seconds |
 
 Examples:
 
@@ -628,41 +654,27 @@ For supported adapters and target-specific variables, see:
 
 # Target adapters
 
-The Relay project does not own target-specific mapping logic.
+The Relay project does not own target-specific mapping logic. All target adapters are implemented once in [`com-event-core`](../com-event-core/) and loaded by the Shim after it receives a queued raw COM payload, so adapter behavior is identical to the Bridge.
 
-Adapters live in:
+## Supported platforms
 
-```text
-com-event-core
+For the full list of supported platforms and their per-adapter details — category, role, authentication, whether COM offers a native integration, how a clear is delivered, and validation status — see the [supported-adapters table in `com-event-core`](../com-event-core/README.md#supported-adapters), the single source of truth.
+
+**Target not listed?** You have two options:
+
+- **Use the generic `webhook` adapter** to POST the `CanonicalEvent` as JSON to any HTTP endpoint — no code required.
+- **Add your own adapter** if the target needs a specific API or payload shape — see [adding a new target](../com-event-core/README.md#adding-a-new-target).
+
+## Selecting one or more targets
+
+The Shim selects adapters with the `TARGETS` environment variable. Use one name, or several comma-separated to fan one COM event out to each target:
+
+```bash
+TARGETS=servicenow
+TARGETS=servicenow,splunk
 ```
 
-The Shim loads adapters from Core after receiving a queued raw COM payload.
-
-Core owns:
-
-- `CanonicalEvent`
-- COM resource normalisation
-- `SERVER_MONITORS`
-- correlation
-- de-duplication
-- fan-out
-- partial failure handling
-- adapter registry
-- target-specific integration logic
-
-This avoids duplicating adapter documentation between Relay and Bridge.
-
-See:
-
-[`../com-event-core/README.md`](../com-event-core/README.md)
-
-for:
-
-- supported targets
-- raise/clear behavior
-- tenant-specific tuning
-- adapter validation status
-- adding new adapters
+Each adapter also reads its own connection settings (URLs, credentials, tokens) from environment variables or mounted secret files — see [`com-event-core`](../com-event-core/README.md#supported-adapters).
 
 ---
 

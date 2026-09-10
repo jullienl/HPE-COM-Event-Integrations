@@ -610,22 +610,32 @@ Target-specific adapter credentials and mappings are documented centrally in:
 
 ## Bridge settings
 
-| Variable | Required | Notes |
-|---|---|---|
-| `COM_SHARED_SECRET` | Yes | Secret COM sends with every event |
-| `SHARED_SECRET_HEADER` | No | Header carrying the shared secret. Default `x-shim-secret` |
-| `MAX_BODY_BYTES` | No | Maximum request body. Default `262144` |
-| `DELIVERY_MODE` | No | `spool` default, or `sync` |
-| `SPOOL_PATH` | Yes in spool mode | Persistent SQLite spool path. Container default `/data/spool.db` |
-| `SPOOL_MAX_BYTES` | No | Maximum local spool size |
-| `SPOOL_RETRY_SECONDS` | No | Initial retry delay |
-| `SPOOL_RETRY_CAP` | No | Maximum retry delay |
-| `SPOOL_POLL_SECONDS` | No | Background spool worker poll interval |
-| `TARGETS` | No | One or more adapter names. Default `webhook` |
-| `TARGET_TIMEOUT` | No | Per-target HTTP timeout. Default `15` seconds |
-| `SERVER_MONITORS` | No | COM server conditions to monitor. See Core README |
-| `DEDUP_DB_PATH` | No | SQLite de-duplication database |
-| `DEDUP_TTL_SECONDS` | No | De-duplication window; `0` disables |
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `COM_SHARED_SECRET` | Yes | — | Secret COM sends with every event |
+| `SHARED_SECRET_HEADER` | No | `x-shim-secret` | Header carrying the shared secret |
+| `MAX_BODY_BYTES` | No | `262144` | Maximum request body (256 KB) |
+| `DELIVERY_MODE` | No | `spool` | `spool` (durable) or `sync` (best-effort) |
+| `SPOOL_PATH` | Yes in spool mode | `/data/spool.db` | Persistent SQLite spool path (container default; must be on durable storage) |
+| `SPOOL_MAX_BYTES` | No | `52428800` | Maximum local spool backlog (50 MB); over this → `503` backpressure |
+| `SPOOL_RETRY_SECONDS` | No | `30` | Initial retry delay (grows exponentially per attempt) |
+| `SPOOL_RETRY_CAP` | No | `3600` | Maximum retry delay (1 hour) |
+| `SPOOL_POLL_SECONDS` | No | `2` | How often the background worker checks for due spooled events |
+| `TARGETS` | No | `webhook` | One or more adapter names, comma-separated |
+| `TARGET_TIMEOUT` | No | `15` | Per-target HTTP timeout, in seconds |
+| `SERVER_MONITORS` | No | `health` | COM server conditions to monitor. See Core README |
+| `DEDUP_DB_PATH` | No | `/data/dedup.db` | SQLite de-duplication database (container default) |
+| `DEDUP_TTL_SECONDS` | No | `3600` | De-duplication window, in seconds; `0` disables |
+
+> **`SPOOL_POLL_SECONDS` does not delay event receipt.** The Bridge's primary
+> path is **not polled** — it receives COM webhooks directly over HTTPS, so an
+> incoming event is processed the instant it arrives. In `sync` mode it is
+> delivered inline; in `spool` mode it is written to the local spool immediately
+> and acknowledged to COM (`202`). `SPOOL_POLL_SECONDS` only governs the
+> **background retry drain** of already-spooled events — i.e. how often the
+> worker wakes to re-attempt items still pending (for example after a target
+> outage). The default `2` therefore adds at most a ~2 s delay to a *retry*, not
+> to first receipt.
 
 Example:
 
@@ -653,27 +663,27 @@ For the current adapter list and required target credentials, see:
 
 # Target adapters
 
-The Bridge does not implement target adapters itself.
+The Bridge does not implement target adapters itself. All target adapters are implemented once in [`com-event-core`](../com-event-core/) and loaded at runtime, so adapter behavior is identical to the Relay + Shim model.
 
-It loads them from:
+## Supported platforms
 
-```text
-com-event-core
+For the full list of supported platforms and their per-adapter details — category, role, authentication, whether COM offers a native integration, how a clear is delivered, and validation status — see the [supported-adapters table in `com-event-core`](../com-event-core/README.md#supported-adapters), the single source of truth.
+
+**Target not listed?** You have two options:
+
+- **Use the generic `webhook` adapter** to POST the `CanonicalEvent` as JSON to any HTTP endpoint — no code required.
+- **Add your own adapter** if the target needs a specific API or payload shape — see [adding a new target](../com-event-core/README.md#adding-a-new-target).
+
+## Selecting one or more targets
+
+The Bridge selects adapters with the `TARGETS` environment variable. Use one name, or several comma-separated to fan one COM event out to each target:
+
+```bash
+TARGETS=servicenow
+TARGETS=servicenow,splunk
 ```
 
-That package owns:
-
-- `CanonicalEvent`
-- COM resource normalisation
-- `SERVER_MONITORS`
-- raise/clear correlation
-- per-target de-duplication
-- multi-target fan-out
-- partial-failure behavior
-- all built-in adapters
-- target-specific configuration guidance
-
-This avoids duplicating adapter documentation between Relay and Bridge.
+Each adapter also reads its own connection settings (URLs, credentials, tokens) from environment variables or mounted secret files — see [`com-event-core`](../com-event-core/README.md#supported-adapters).
 
 ---
 

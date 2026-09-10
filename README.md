@@ -2,7 +2,7 @@
 
 Securely integrate **HPE Compute Ops Management (COM)** webhook events with **ITSM, ITOM, SIEM, SOAR, ChatOps, incident-response, and observability platforms** — with webhook validation, authentication, payload normalisation, de-duplication, reliable delivery, raise/clear correlation, and an architecture option that requires **no inbound network port into the customer environment**.
 
-The framework uses a shared `CanonicalEvent` model and pluggable target adapters, so COM-specific processing is implemented once and the same delivery logic can be reused across many operational platforms.
+The framework uses a shared `CanonicalEvent` model and pluggable **target adapters** — small components that translate a COM event into the API of a specific destination platform (ServiceNow, Splunk, OBM, and others) — so COM-specific processing is implemented once and the same delivery logic can be reused across many operational platforms.
 
 It ships as **ready-to-run, multi-architecture container images** (published to GHCR) that are configured entirely through environment variables and secrets — deploy quickly by passing your own parameters, with no code changes and nothing to build first.
 
@@ -30,19 +30,17 @@ Both models share the same normalisation, de-duplication, correlation, and targe
 
 - [Why this project?](#why-this-project)
 - [What it provides](#what-it-provides)
+- [How it works](#how-it-works)
 - [Typical use cases](#typical-use-cases)
 - [Quick start](#quick-start)
 - [Deployment models](#deployment-models)
 - [Which deployment should I choose?](#which-deployment-should-i-choose)
 - [Supported integrations](#supported-integrations)
 - [When should I use a native COM integration?](#when-should-i-use-a-native-com-integration)
-- [How it works](#how-it-works)
-- [Delivering to multiple targets](#delivering-to-multiple-targets)
 - [COM event lifecycle](#com-event-lifecycle)
 - [Projects in this repository](#projects-in-this-repository)
 - [Container images](#container-images)
 - [Documentation](#documentation)
-- [Adapter validation status](#adapter-validation-status)
 - [Roadmap](#roadmap)
 - [License](#license)
 
@@ -80,9 +78,7 @@ The receiver handles the COM webhook contract, including:
 
 ## Normalised event model
 
-COM events are transformed into a neutral `CanonicalEvent` before target-specific delivery.
-
-That separates:
+Every COM event is first converted into a neutral `CanonicalEvent`, and only then handed to a target adapter for delivery:
 
 ```text
 COM-specific processing
@@ -94,16 +90,17 @@ COM-specific processing
 Target-specific adapter
 ```
 
-from the API details of ServiceNow, Jira, OpsRamp, Splunk, Datadog, and other platforms.
+This keeps COM-specific parsing in one place and isolates it from the API details of each destination platform (ServiceNow, Jira, OpsRamp, Splunk, Datadog, and others). Each adapter only needs to understand the `CanonicalEvent`, not the COM webhook format.
 
-## Reliable delivery
+## Pluggable adapters
 
-Depending on the deployment model:
+A target adapter is a small component that translates a `CanonicalEvent` into the request expected by a specific destination platform. Adding an integration is primarily that mapping:
 
-- **Relay + Shim** uses Azure Service Bus or AWS SQS as the durable queue.
-- **Bridge** can use an on-disk spool.
+```text
+CanonicalEvent -> target API
+```
 
-This allows receive and delivery to be decoupled and provides retry when a target is temporarily unavailable.
+The COM receiver does not need to be redesigned for every new target.
 
 ## De-duplication
 
@@ -115,19 +112,18 @@ A stable `correlation_key` ties a problem event to its recovery event.
 
 Targets that support stateful objects can therefore close or resolve the object opened by the original raise.
 
+## Reliable delivery
+
+Depending on the deployment model:
+
+- **Relay + Shim** uses Azure Service Bus or AWS SQS as the durable queue.
+- **Bridge** can use an on-disk spool.
+
+This allows receive and delivery to be decoupled and provides retry when a target is temporarily unavailable.
+
 ## Multi-target fan-out
 
 A single COM event can be delivered independently to several different target adapters.
-
-## Pluggable adapters
-
-Adding an integration is primarily a mapping from:
-
-```text
-CanonicalEvent -> target API
-```
-
-The COM receiver does not need to be redesigned for every new target.
 
 ## Ready-to-deploy containerized solution
 
@@ -157,23 +153,54 @@ All deployment-specific behavior is supplied through configuration, including:
 
 With **Relay + Shim**, the public endpoint lives in Azure or AWS and the on-premises shim consumes from the queue using outbound connectivity.
 
-**No inbound network path is required into the customer environment.**
+With this model, **no inbound network path is required into the customer environment**. (The **Bridge** model does require inbound HTTPS, since COM connects to it directly.)
+
+---
+
+# How it works
+
+The core architecture intentionally separates COM-specific logic from target-specific logic.
+
+```mermaid
+flowchart LR
+    COM[COM Webhook] --> VERIFY[Handshake + Auth]
+    VERIFY --> PARSE[COM Parser / Normaliser]
+    PARSE --> EVENT[CanonicalEvent]
+    EVENT --> DEDUP[De-dup + Correlation]
+
+    DEDUP --> SN[ServiceNow]
+    DEDUP --> JIRA[Jira]
+    DEDUP --> OR[OpsRamp]
+    DEDUP --> OBM[OBM]
+    DEDUP --> SPL[Splunk]
+    DEDUP --> DD[Datadog]
+    DEDUP --> OTHER[Other Adapters]
+```
+
+A new integration generally does **not** require changing the COM webhook receiver.
+
+Instead, a target adapter maps:
+
+```text
+CanonicalEvent
+      |
+      v
+Target-specific API request
+```
+
+This keeps the COM contract, de-duplication, correlation, and delivery behavior consistent across adapters.
 
 ---
 
 # Typical use cases
 
-- Create or update an ITSM incident when a COM-managed server becomes unhealthy.
-- Automatically resolve an incident when COM reports that the condition has recovered.
-- Forward COM hardware and server events to a SIEM platform for search, correlation, or audit.
-- Send events to an ITOM/AIOps platform for operational correlation.
-- Feed observability and monitoring platforms such as Datadog, Dynatrace, or Grafana.
-- Trigger PagerDuty incidents from COM events.
-- Post operational notifications to Microsoft Teams or Slack.
-- Create GitHub or Jira issues from COM events.
+- Create or update a ticket, incident, or issue in an ITSM or incident-response platform (ServiceNow, Jira, PagerDuty, GitHub, and others) when a COM-managed server becomes unhealthy.
+- Automatically resolve or close that item when COM reports the condition has recovered.
+- Forward COM hardware and server events to a SIEM, ITOM/AIOps, or observability platform (Splunk, OpsRamp, Datadog, Dynatrace, Grafana, and others) for search, correlation, audit, or operational monitoring.
+- Post operational notifications to a ChatOps channel such as Microsoft Teams or Slack.
 - Integrate COM with a platform that does not natively understand the COM webhook contract.
 - Deliver COM events to an internal application **without opening inbound firewall ports**.
-- Fan one COM event stream out to several operational systems at once.
+- Fan one COM event stream out to several operational systems at once — for example, open a ServiceNow incident, feed the same event to Splunk for audit, and post a Slack notification to the operations channel.
 - Insert custom transformation, filtering, authentication, or enrichment between COM and the target.
 
 ---
@@ -192,6 +219,14 @@ With **Relay + Shim**, the public endpoint lives in Azure or AWS and the on-prem
 
 → [`com-event-core`](com-event-core/)
 
+**Want the fastest path from an empty environment to a working COM-to-target pipeline?**
+
+Follow an end-to-end deployment runbook:
+
+- [Azure relay + on-prem shim](com-event-relay/docs/Deploy-End-to-End-to-Azure.md)
+- [AWS relay + on-prem shim](com-event-relay/docs/Deploy-End-to-End-to-AWS.md)
+- [Bridge (single-box on-prem)](com-event-bridge/docs/Deploy-End-to-End-On-Prem.md)
+
 ---
 
 # Deployment models
@@ -200,23 +235,7 @@ With **Relay + Shim**, the public endpoint lives in Azure or AWS and the on-prem
 
 Recommended when the target resides in a restricted or private customer network.
 
-```text
-COM
- |
- | HTTPS webhook
- v
-Public Cloud Relay
- |
- v
-Azure Service Bus / AWS SQS
- |
- | outbound connection from customer environment
- v
-On-prem Shim
- |
- v
-Target application
-```
+<img src="docs/images/com-event-relay-architecture.png" alt="COM Event Relay architecture" width="800" />
 
 ### Benefits
 
@@ -243,16 +262,7 @@ See [`com-event-relay`](com-event-relay/) for deployment details and [`end-to-en
 
 Recommended when you can expose a public HTTPS endpoint that COM can reach and want the smallest deployment footprint.
 
-```text
-COM
- |
- | HTTPS webhook
- v
-On-prem Bridge
- |
- v
-Target application
-```
+<img src="docs/images/com-event-bridge-architecture.png" alt="COM Event Bridge architecture" width="800" />
 
 The bridge performs the complete pipeline in one process:
 
@@ -323,113 +333,98 @@ This means there is **no inbound connection from COM into the customer network**
 
 ---
 
-# Supported integrations
+## Which component does what?
 
-All target adapters are implemented in `com-event-core` and can be used by both deployment models:
-
-- `com-event-relay` 
-- `com-event-bridge`
-
-Select one or more adapters with:
-
-```bash
-TARGETS=<name>
-```
-
-or:
-
-```bash
-TARGETS=<name>,<name>,<name>
-```
-
-For example:
-
-```bash
-TARGETS=jira
-TARGETS=servicenow,splunk
-TARGETS=opsramp,teams,pagerduty
-```
-
-## Integration categories
-
-### ITSM — IT Service Management
-
-Platforms used for incidents, tickets, service requests, and service-management workflows.
-
-Supported adapters include:
-
-- ServiceNow
-- HaloITSM
-- Jira Service Management / Jira Software
-- BMC Helix ITSM
-
-### ITOM / AIOps — IT Operations Management
-
-Platforms used to monitor, correlate, and operate infrastructure and service health.
-
-Supported adapters include:
-
-- OpsRamp
-- OpenText Operations Bridge Manager (OBM)
-
-### SIEM — Security Information and Event Management
-
-Platforms used for event ingestion, search, security analysis, correlation, and audit.
-
-Supported adapters include:
-
-- Splunk
-- Elastic
-- Microsoft Sentinel / Log Analytics
-
-### Observability / Monitoring
-
-Platforms used for monitoring, telemetry, logs, operational events, and observability.
-
-Supported adapters include:
-
-- Datadog
-- Dynatrace
-- Grafana Cloud Logs / Loki
-
-### Incident response / ChatOps / Collaboration
-
-Supported adapters include:
-
-- PagerDuty
-- Microsoft Teams
-- Slack
-- GitHub Issues
-
-### Generic integration
-
-- Generic webhook adapter
+| Feature | Bridge | Cloud Relay | On-prem Shim |
+|---|---:|---:|---:|
+| COM verification handshake | ✅ | ✅ | — |
+| Shared-secret validation | ✅ | ✅ | — |
+| Request/input hardening | ✅ | ✅ | — |
+| Enqueue to durable cloud queue | — | ✅ | — |
+| Consume from cloud queue | — | — | ✅ |
+| Normalise to `CanonicalEvent` | ✅ | — | ✅ |
+| De-duplication | ✅ | — | ✅ |
+| Raise / clear correlation | ✅ | Event identity only | ✅ |
+| Target adapter execution | ✅ | — | ✅ |
+| Retry | ✅ via spool | Queue-driven | ✅ via redelivery |
+| Durable buffer | Local spool | Cloud queue | Consumes cloud queue |
+| Public HTTPS endpoint | ✅ | ✅ managed edge | — |
+| Inbound customer-network path | Required | — | **Not required** |
 
 ---
 
-## Integration matrix
+# Supported integrations
 
-| `TARGET` | Category | Primary role | Authentication | Native COM path | Clear handling |
-|---|---|---|---|---|---|
-| `servicenow` | ITSM | Event Management or incident creation | Basic | ✅ | ✅ Clear / resolve |
-| `halo` | ITSM | Ticket / incident creation | OAuth2 | — | ✅ Close matching ticket |
-| `jira` | ITSM | JSM / Jira issue creation | Email + API token | — | ✅ Close transition |
-| `bmc_helix` | ITSM | Helix / Remedy incident creation | JWT | — | ✅ Resolve |
-| `opsramp` | ITOM / AIOps | Alert / event ingestion | OAuth2 | ✅ | ✅ State → OK |
-| `obm` | ITOM | OBM event ingestion | Basic | — | ✅ Normal / closed |
-| `splunk` | SIEM / log | HEC ingestion | HEC token | — | ➖ Clear as event |
-| `elastic` | SIEM / log | Elasticsearch document ingestion | API key / Basic | — | ➖ Clear as document |
-| `sentinel` | SIEM | Log Analytics / Sentinel ingestion | Workspace credentials | — | ➖ Clear as record |
-| `pagerduty` | Incident response | Events API v2 | Routing key | — | ✅ Resolve using `dedup_key` |
-| `slack` | ChatOps | Incoming webhook message | Webhook URL | — | ➖ Resolved message |
-| `teams` | ChatOps | Adaptive Card via Workflow webhook | Webhook URL | — | ➖ Resolved card |
-| `github` | Issue tracking | GitHub issue creation | PAT | — | ✅ Close matching issue |
-| `datadog` | Monitoring | Events API | API key | — | ➖ Recovery event |
-| `dynatrace` | Monitoring | Events API v2 | API token | — | ➖ Recovery event |
-| `grafana` | Observability / log | Grafana Cloud Logs / Loki | Basic | — | ➖ Clear log line |
-| `webhook` | Generic | Canonical JSON POST | Optional custom header | — | ➖ Clear as event |
+This project ships with a rich set of built-in target adapters spanning **ITSM**, **ITOM / AIOps**, **SIEM**, **observability / monitoring**, and **incident-response / ChatOps**, plus a **generic webhook** — so a single COM event stream can drive service-management, operations, security, and collaboration platforms at the same time.
 
-Detailed credentials and adapter-specific environment variables are documented in [`com-event-core`](com-event-core/) and the project-specific README files.
+## Where the adapters live
+
+All target adapters are implemented once in [`com-event-core`](com-event-core/) and reused by both deployment models — `com-event-relay` and `com-event-bridge` — so a fix or new mapping is inherited by both.
+
+## Supported platforms
+
+For the full list of supported platforms and their per-adapter details — category, role, authentication, whether COM offers a native integration, how a clear is delivered, and validation status — see the [supported-adapters table in `com-event-core`](com-event-core/README.md#supported-adapters), the single source of truth.
+
+> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending is **validation against a live product**: only the **GitHub adapter** has been exercised end-to-end against a real target so far; the others have not yet been tested against a live instance (for lack of licensed lab environments). Validate each adapter against your own environment before production use.
+>
+> 🙋 Contributions and live-tenant validation feedback are welcome. 
+
+> 🚨 If you face any issue with an adapter integration, please [open an issue](https://github.com/jullienl/HPE-COM-Event-Integrations/issues) in the project.
+
+
+**Target not listed?** You have two options:
+
+- **Use the generic `webhook` adapter** to POST the `CanonicalEvent` as JSON to any HTTP endpoint — no code required.
+- **Add your own adapter** if the target needs a specific API or payload shape — see [adding a new target](com-event-core/README.md#adding-a-new-target).
+
+
+
+## Selecting one or more targets
+
+Adapters are selected with the `TARGETS` environment variable, supplied to the container like any other setting. Use one name, or several comma-separated to fan one COM event out to each target:
+
+```bash
+TARGETS=<name>
+TARGETS=<name>,<name>,<name>
+```
+
+For example, running the Bridge image and selecting the `servicenow` and `splunk` adapters:
+
+```bash
+docker run -d \
+  --name com-event-bridge \
+  -p 8080:8080 \
+  -v bridge-data:/data \
+  -e COM_SHARED_SECRET=change-me \
+  -e TARGETS=servicenow,splunk \
+  ghcr.io/jullienl/com-event-bridge:latest
+```
+
+Each adapter also reads its own connection settings (URLs, credentials, tokens) from environment variables or mounted secret files — see [`com-event-core`](com-event-core/) and the project READMEs for the full list.
+
+### Fan-out to several targets
+
+One COM event can be delivered to several different adapters without running a separate COM receiver for every target:
+
+```bash
+TARGETS=halo
+TARGETS=halo,opsramp
+TARGETS=servicenow,splunk
+TARGETS=github,slack
+TARGETS=sentinel,pagerduty,teams
+```
+
+**Independent delivery.** De-duplication and raise/clear state are tracked per adapter, so a successful target is not resent simply because another target failed.
+
+**Safe partial failure.** If one target is unavailable:
+
+1. successful targets remain successful
+2. the failed adapter is retried
+3. successful target deliveries are not duplicated
+
+**Use durable delivery for important fan-out.** Multi-target delivery should use the Relay + Shim queue or Bridge spool mode. Bridge `sync` mode is best-effort and does not provide durable retry.
+
+**Current limitation.** Multiple instances of the **same adapter type** (for example, two generic webhook adapters) are not yet supported because adapters currently use global environment-variable names. Support for per-instance adapter configuration is listed in the [Roadmap](#roadmap).
 
 ---
 
@@ -457,112 +452,6 @@ Use this framework when you need capabilities such as:
 - a single shared integration architecture across multiple target products
 
 Even for ServiceNow or OpsRamp, Relay + Shim can be useful when the internal endpoint must remain private.
-
----
-
-# How it works
-
-The core architecture intentionally separates COM-specific logic from target-specific logic.
-
-```mermaid
-flowchart LR
-    COM[COM Webhook] --> VERIFY[Handshake + Auth]
-    VERIFY --> PARSE[COM Parser / Normaliser]
-    PARSE --> EVENT[CanonicalEvent]
-    EVENT --> DEDUP[De-dup + Correlation]
-
-    DEDUP --> SN[ServiceNow]
-    DEDUP --> JIRA[Jira]
-    DEDUP --> OR[OpsRamp]
-    DEDUP --> OBM[OBM]
-    DEDUP --> SPL[Splunk]
-    DEDUP --> DD[Datadog]
-    DEDUP --> OTHER[Other Adapters]
-```
-
-A new integration generally does **not** require changing the COM webhook receiver.
-
-Instead, a target adapter maps:
-
-```text
-CanonicalEvent
-      |
-      v
-Target-specific API request
-```
-
-This keeps the COM contract, de-duplication, correlation, and delivery behavior consistent across adapters.
-
----
-
-## Which component does what?
-
-| Feature | Bridge | Cloud Relay | On-prem Shim |
-|---|---:|---:|---:|
-| COM verification handshake | ✅ | ✅ | — |
-| Shared-secret validation | ✅ | ✅ | — |
-| Request/input hardening | ✅ | ✅ | — |
-| Enqueue to durable cloud queue | — | ✅ | — |
-| Consume from cloud queue | — | — | ✅ |
-| Normalise to `CanonicalEvent` | ✅ | — | ✅ |
-| De-duplication | ✅ | — | ✅ |
-| Raise / clear correlation | ✅ | Event identity only | ✅ |
-| Target adapter execution | ✅ | — | ✅ |
-| Retry | ✅ via spool | Queue-driven | ✅ via redelivery |
-| Durable buffer | Local spool | Cloud queue | Consumes cloud queue |
-| Public HTTPS endpoint | ✅ | ✅ managed edge | — |
-| Inbound customer-network path | Required | — | **Not required** |
-
----
-
-# Delivering to multiple targets
-
-One COM event can be delivered to several different adapters without running a separate COM receiver for every target.
-
-Examples:
-
-```bash
-TARGETS=halo
-TARGETS=halo,opsramp
-TARGETS=servicenow,splunk
-TARGETS=github,slack
-TARGETS=sentinel,pagerduty,teams
-```
-
-### Independent delivery
-
-De-duplication and raise/clear state are tracked per adapter.
-
-A successful target is not resent simply because another target failed.
-
-### Safe partial failure
-
-If one target is unavailable:
-
-1. successful targets remain successful
-2. the failed adapter is retried
-3. successful target deliveries are not duplicated
-
-### Use durable delivery for important fan-out
-
-Multi-target delivery should use:
-
-- the Relay + Shim queue, or
-- Bridge spool mode
-
-Bridge `sync` mode is best-effort and does not provide durable retry.
-
-### Current limitation
-
-Multiple instances of the **same adapter type** are not yet supported because adapters currently use global environment-variable names.
-
-For example, this is not currently a supported configuration:
-
-```text
-two different generic webhook adapters
-```
-
-Support for per-instance adapter configuration is listed in the [Roadmap](#roadmap).
 
 ---
 
@@ -619,63 +508,9 @@ For the exact COM webhook filters and lifecycle examples, see the project docume
 
 # Projects in this repository
 
-## [`com-event-relay`](com-event-relay/)
-
-Cloud relay plus outbound consumer:
-
-```text
-COM -> Relay -> Azure Service Bus / AWS SQS -> Shim -> Target
-```
-
-Includes:
-
-- Azure Container Apps support
-- AWS App Runner support
-- Azure Service Bus
-- AWS SQS
-- outbound-only shim
-- deployment scripts and end-to-end runbooks
-
-Start here when the internal target should **not** be directly reachable from COM.
-
----
-
-## [`com-event-bridge`](com-event-bridge/)
-
-Single-box all-in-one deployment:
-
-```text
-COM -> Bridge -> Target
-```
-
-Includes:
-
-- webhook handshake and authentication
-- normalisation
-- de-duplication
-- correlation
-- target adapters
-- optional on-disk spool
-- nginx + certbot public TLS edge
-
-Start here when you can host the public endpoint yourself and want the smallest footprint.
-
----
-
-## [`com-event-core`](com-event-core/)
-
-Shared integration package used by both Bridge and the Relay Shim.
-
-It contains:
-
-- `CanonicalEvent`
-- COM event normalisation
-- de-duplication
-- raise/clear correlation
-- target-adapter framework
-- all built-in adapters
-
-A fix to an adapter or mapping is made once in `com-event-core` and inherited by both deployment models.
+- [`com-event-relay`](com-event-relay/) — cloud relay + outbound-only shim; use when the internal target must **not** be directly reachable from COM.
+- [`com-event-bridge`](com-event-bridge/) — single-box all-in-one receiver; use when you can host the public HTTPS endpoint yourself and want the smallest footprint.
+- [`com-event-core`](com-event-core/) — shared package (`CanonicalEvent`, normalisation, de-duplication, raise/clear correlation, all built-in adapters) used by both deployment models, so a fix or new mapping is made once and inherited by both.
 
 ---
 
@@ -715,32 +550,6 @@ Each flow covers the public receiver, COM webhooks, raise/clear behavior, and ta
 
 ---
 
-# Adapter validation status
-
-> ⚠️ **Important**
->
-> The adapters are reference implementations and must be validated against the target environment before production use.
-
-At the time of writing, the **GitHub adapter** has been exercised end-to-end against a live target.
-
-The other built-in adapters are implemented against the relevant product APIs but may require:
-
-- connectivity validation
-- tenant-specific field mapping
-- workflow/status tuning
-- authentication adjustments
-- confirmation of raise/clear behavior
-
-Some platforms are particularly tenant-specific. Examples include:
-
-- Jira close-transition names
-- BMC Helix status, impact, and urgency values
-- Microsoft Sentinel / Log Analytics custom-table conventions
-
-🙋 **Volunteers welcome.** If you can validate an adapter against a live environment, contributions, issues, and pull requests are welcome.
- 
----
-
 # Roadmap
 
 Planned or candidate improvements include:
@@ -755,10 +564,10 @@ Planned or candidate improvements include:
   New integrations remain small `CanonicalEvent -> target API` mappings in `com-event-core`.
 
 - **Additional shim deployment helpers**  
-  Simplify running the outbound shim as a managed container or system service.
+  Provide ready-made ways to run the on-prem outbound shim as a supervised, auto-restarting service — for example a `systemd` unit for bare-metal/VM hosts and a Compose/Kubernetes manifest for container hosts — so it survives reboots and crashes without manual intervention.
 
 - **Infrastructure-as-code templates**  
-  Add Bicep / CloudFormation and simplified deployment entry points.
+  Add declarative templates (Azure Bicep, AWS CloudFormation) that create the cloud relay stack — the receiver, the durable queue, and the required roles — in one reproducible command, plus a simplified parameter-driven entry point instead of running many individual CLI steps.
 
 Contributions and real-world adapter feedback are welcome.
 

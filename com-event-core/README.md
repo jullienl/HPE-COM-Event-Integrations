@@ -33,8 +33,7 @@ It contains the COM event normalisation, `CanonicalEvent` model, de-duplication,
 - [Correlation and de-duplication](#correlation-and-de-duplication)
 - [Delivering to multiple targets](#delivering-to-multiple-targets)
 - [Supported adapters](#supported-adapters)
-- [Raise / clear behavior by adapter](#raise--clear-behavior-by-adapter)
-- [Adapter validation status](#adapter-validation-status)
+  - [Adapter reference table](#adapter-reference-table)
 - [Known per-target tuning](#known-per-target-tuning)
 - [Usage](#usage)
 - [Example: COM event to CanonicalEvent](#example-com-event-to-canonicalevent)
@@ -547,108 +546,63 @@ Multiple instances of the **same adapter type** are not currently supported beca
 Current adapter names:
 
 ```text
-obm
-servicenow
-opsramp
-halo
-splunk
+bmc_helix
+datadog
+dynatrace
+elastic
 github
-slack
-teams
+grafana
+halo
 jira
+obm
+opsramp
 pagerduty
 sentinel
-datadog
-elastic
-bmc_helix
-dynatrace
-grafana
+servicenow
+slack
+splunk
+teams
 webhook
 ```
 
-| `TARGET` | Category | Target role |
-|---|---|---|
-| `servicenow` | ITSM | Event Management or incident creation |
-| `halo` | ITSM | HaloITSM ticket / incident |
-| `jira` | ITSM | Jira Service Management / Jira issue |
-| `bmc_helix` | ITSM | BMC Helix / Remedy incident |
-| `opsramp` | ITOM / AIOps | Alert / event ingestion |
-| `obm` | ITOM | OpenText OBM event |
-| `splunk` | SIEM / log | Splunk HEC |
-| `elastic` | SIEM / log | Elasticsearch document |
-| `sentinel` | SIEM | Microsoft Sentinel / Log Analytics |
-| `pagerduty` | Incident response | PagerDuty Events API v2 |
-| `slack` | ChatOps | Slack incoming webhook |
-| `teams` | ChatOps | Microsoft Teams Workflow webhook |
-| `github` | Issue tracking | GitHub Issues |
-| `datadog` | Monitoring | Datadog Events API |
-| `dynatrace` | Monitoring | Dynatrace Events API v2 |
-| `grafana` | Observability / log | Grafana Cloud Logs / Loki |
-| `webhook` | Generic | Canonical JSON POST |
+## Adapter reference table
 
----
+This is the single source of truth for adapter support. Each row lists the target category, the adapter's role, the authentication it uses, whether COM also offers a native integration for that target, how a clear (recovery) is delivered, and whether the adapter has been validated end-to-end against a live target.
 
-# Raise / clear behavior by adapter
+The **Category** column groups adapters by the kind of platform they target:
 
-## Stateful targets
+- **ITSM** — incidents, tickets, service requests, and service-management workflows
+- **ITOM / AIOps** — monitoring, correlation, and operation of infrastructure and service health
+- **SIEM / log** — event ingestion, search, security analysis, correlation, and audit
+- **Monitoring / Observability** — telemetry, logs, and operational events
+- **Incident response / ChatOps** — paging and operational notifications
+- **Issue tracking** — issue/ticket creation and closure
+- **Generic** — canonical JSON POST to any HTTP endpoint
 
-| Adapter | Clear behavior |
-|---|---|
-| `servicenow` Event Management | Sends a clear event |
-| `servicenow` incident | Finds and resolves the correlated incident |
-| `halo` | Finds the matching ticket by `thirdpartyref` and closes it |
-| `jira` | Finds the correlated issue and runs the configured close transition |
-| `bmc_helix` | Finds the correlated incident and marks it resolved |
-| `opsramp` | Sends state `Ok` using the same alert key |
-| `obm` | Sends normal/closed state using the same correlation key |
-| `github` | Finds and closes the matching issue |
-| `pagerduty` | Sends `resolve` using the same `dedup_key` |
+| `TARGET` | Category | Role | Auth | Native COM | Clear behavior | Live validation |
+|---|---|---|---|:---:|---|:---:|
+| `servicenow` | ITSM | Event Management or incident creation | Basic | ✅ | Sends a clear event / resolves the correlated incident | ⚠️ Validate |
+| `halo` | ITSM | HaloITSM ticket / incident | OAuth2 | — | Closes the matching ticket (by `thirdpartyref`) | ⚠️ Validate |
+| `jira` | ITSM | Jira Service Management / Jira issue | Email + API token | — | Runs the configured close transition | ⚠️ Validate |
+| `bmc_helix` | ITSM | BMC Helix / Remedy incident | JWT | — | Marks the correlated incident resolved | ⚠️ Validate |
+| `opsramp` | ITOM / AIOps | Alert / event ingestion | OAuth2 | ✅ | Sends state `Ok` using the same alert key | ⚠️ Validate |
+| `obm` | ITOM | OpenText OBM event | Basic | — | Sends normal/closed using the same correlation key | ⚠️ Validate |
+| `splunk` | SIEM / log | Splunk HEC | HEC token | — | Stored as an event with `action=clear` | ⚠️ Validate |
+| `elastic` | SIEM / log | Elasticsearch document | API key / Basic | — | Indexed as another document | ⚠️ Validate |
+| `sentinel` | SIEM | Microsoft Sentinel / Log Analytics | Workspace credentials | — | Ingested as another record | ⚠️ Validate |
+| `pagerduty` | Incident response | PagerDuty Events API v2 | Routing key | — | Sends `resolve` using the same `dedup_key` | ⚠️ Validate |
+| `slack` | ChatOps | Slack incoming webhook | Webhook URL | — | Posts a resolved notification | ⚠️ Validate |
+| `teams` | ChatOps | Microsoft Teams Workflow webhook | Webhook URL | — | Posts a resolved card | ⚠️ Validate |
+| `github` | Issue tracking | GitHub Issues | PAT | — | Closes the matching issue | ✅ |
+| `datadog` | Monitoring | Datadog Events API | API key | — | Posts a recovery/success event | ⚠️ Validate |
+| `dynatrace` | Monitoring | Dynatrace Events API v2 | API token | — | Posts a recovery event | ⚠️ Validate |
+| `grafana` | Observability / log | Grafana Cloud Logs / Loki | Basic | — | Writes a clear log entry | ⚠️ Validate |
+| `webhook` | Generic | Canonical JSON POST | Optional custom header | — | Sends the canonical clear event | ⚠️ Validate |
 
-## Event / log / notification targets
 
-| Adapter | Clear behavior |
-|---|---|
-| `splunk` | Clear is stored as an event with `action=clear` |
-| `elastic` | Clear is indexed as another document |
-| `sentinel` | Clear is ingested as another record |
-| `slack` | Posts a resolved notification |
-| `teams` | Posts a resolved card |
-| `datadog` | Posts a recovery/success event |
-| `dynatrace` | Posts a recovery event |
-| `grafana` | Writes a clear log entry |
-| `webhook` | Sends the canonical clear event |
-
----
-
-# Adapter validation status
-
-> ⚠️ **Important**
+> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending is **validation against a live product**: only the **GitHub adapter** has been exercised end-to-end against a real target so far; the others have not yet been tested against a live instance (for lack of licensed lab environments). Validate each adapter against your own environment before production use. Useful validation feedback includes authentication, payload acceptance, object creation, de-duplication, raise/clear behavior, and tenant-specific settings. Tenant-specific tuning is covered in [Known per-target tuning](#known-per-target-tuning).
 >
-> These adapters are reference implementations. Validate connectivity, authentication, payload mapping, and raise/clear behavior against your own target environment before production use.
-
-At the time of writing, the `github` adapter has been exercised end-to-end against a live target.
-
-| Adapter | Implemented | Live end-to-end validation |
-|---|:---:|:---:|
-| `github` | ✅ | ✅ |
-| `servicenow` | ✅ | ⚠️ Validate |
-| `opsramp` | ✅ | ⚠️ Validate |
-| `halo` | ✅ | ⚠️ Validate |
-| `splunk` | ✅ | ⚠️ Validate |
-| `obm` | ✅ | ⚠️ Validate |
-| `slack` | ✅ | ⚠️ Validate |
-| `teams` | ✅ | ⚠️ Validate |
-| `jira` | ✅ | ⚠️ Validate |
-| `pagerduty` | ✅ | ⚠️ Validate |
-| `sentinel` | ✅ | ⚠️ Validate |
-| `datadog` | ✅ | ⚠️ Validate |
-| `elastic` | ✅ | ⚠️ Validate |
-| `bmc_helix` | ✅ | ⚠️ Validate |
-| `dynatrace` | ✅ | ⚠️ Validate |
-| `grafana` | ✅ | ⚠️ Validate |
-| `webhook` | ✅ | ⚠️ Validate against destination |
-
-Useful validation feedback includes authentication, payload acceptance, object creation, de-duplication, raise/clear behavior, and tenant-specific settings.
+> 🙋 Contributions and live-tenant validation feedback are welcome. If you face any issue with an adapter integration, please [open an issue](https://github.com/jullienl/HPE-COM-Event-Integrations/issues) in the project.
 
 ---
 
@@ -1066,11 +1020,11 @@ Also test a temporary target outage to verify retry.
 
 When adding an adapter:
 
-1. add it to the root supported-integration matrix
+1. add a row to the [supported-adapters table](#supported-adapters) above (category, role, auth, native-COM path, clear behavior, validation status)
 2. add required variables to Bridge and Relay Shim `.env.example`
-3. document tenant-specific settings
+3. document tenant-specific settings under [Known per-target tuning](#known-per-target-tuning)
 4. extend `examples/dump_payloads.py` if appropriate
-5. update adapter validation status after live testing
+5. update the adapter's validation status in the same table after live testing
 
 The generic `webhook.py` adapter is the simplest implementation to copy.
 

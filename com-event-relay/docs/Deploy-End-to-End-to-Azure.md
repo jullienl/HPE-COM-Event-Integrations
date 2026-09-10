@@ -154,6 +154,18 @@ Then run the two sub-steps below, then continue to **step 3 (verify)**.
 The relay publishes with a **Send**-only key; the shim consumes with a
 **Listen**-only key. Two separate keys = least privilege on each end.
 
+> **Why SAS keys here (and not Managed Identity)?** This runbook uses scoped
+> SAS connection strings for both ends because the **shim runs on-premises** —
+> Azure Managed Identity is only available to Azure-hosted resources, so the
+> shim would need a stored credential regardless. Using SAS keys on both ends
+> keeps relay and shim symmetric and the runbook copy-paste simple, while the
+> separate Send / Listen rules still give least privilege. For an
+> Azure-hosted relay you *can* instead enable a Managed Identity and assign it
+> the **Azure Service Bus Data Sender** role (the shim would use **Data
+> Receiver** only if it too runs in Azure). That removes the stored relay
+> secret but adds an identity, RBAC role assignments, and a few minutes of
+> role-propagation delay — see the relay README's "Relay-owned settings" note.
+
 ```powershell
 # Resource group — the container for every resource created below
 az group create --name $RG --location $LOC -o none
