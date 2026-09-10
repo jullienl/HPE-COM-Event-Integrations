@@ -66,7 +66,14 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
   git clone https://github.com/jullienl/HPE-COM-Event-Integrations.git
   cd HPE-COM-Event-Integrations
   ```
-- **AWS CLI v2** configured for the target account:
+- **AWS CLI v2 installed**, then configured for the target account. If `aws` isn't
+  already on the machine, install it first (see
+  [Install the AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)):
+  - **Windows:** `winget install -e --id Amazon.AWSCLI` (or the MSI from the link).
+  - **macOS:** `brew install awscli` (or the official `.pkg` installer).
+  - **Linux:** `curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install`.
+
+  Then configure credentials and confirm the account:
   ```powershell
   aws configure          # or: aws sso login
   aws sts get-caller-identity --query "{acct:Account, arn:Arn}" --output table
@@ -747,22 +754,129 @@ issue by that label and **closes** it (with a recovery comment).
 
 **Path B — synthetic event (no waiting).** Post a sample server snapshot straight
 at the relay to exercise the whole chain: a `raise` snapshot (unhealthy) opens an
-issue, a `clear` snapshot (healthy) closes it. Generate the exact raw COM payloads
-the repo ships as fixtures (run from the repo root, in your Python venv):
+issue, a `clear` snapshot (healthy) closes it. The two fixtures are just **static
+JSON** — write them with your shell (no Python needed), then POST them. Pick the
+block for your shell.
+
+> **These are `server` *health* payloads — not `alert` payloads.** The fixtures
+> use `type: compute-ops-mgmt/server` with a `hardware/health` block, so they
+> exercise the **server health** condition. That means this test is only valid
+> when the shim runs with `SERVER_MONITORS=health` (step 5) — the default — and
+> mirrors a **compute/server** webhook (step 4, `type eq 'compute-ops/server'`),
+> **not** an `alert` webhook. An `alert` payload has a completely different shape
+> and normalises down a different branch, so it would neither open nor close an
+> issue via the health condition. If you changed `SERVER_MONITORS` to something
+> without `health`, this snapshot is (correctly) ignored — post a fixture for a
+> condition you *do* monitor instead.
+
+**PowerShell (Windows):**
 
 ```powershell
-# Write clean raw-payload JSON files (uses the shipped sample builder)
-python -c "import sys, json; sys.path.insert(0,'com-event-core/examples'); import dump_payloads as d; open('raise.json','w',encoding='utf-8').write(json.dumps(d._build_payload('server','raise')))"
-python -c "import sys, json; sys.path.insert(0,'com-event-core/examples'); import dump_payloads as d; open('clear.json','w',encoding='utf-8').write(json.dumps(d._build_payload('server','clear')))"
+# 1. Write the two fixtures — a raise (health CRITICAL) and a clear (health OK).
+@'
+{
+  "type": "compute-ops-mgmt/server",
+  "id": "P28948-B21+CZ2311004G",
+  "name": "ESX-node-01",
+  "operation": "Updated",
+  "updatedAt": "2025-01-01T10:00:00Z",
+  "hardware": {
+    "serialNumber": "CZ2311004G",
+    "productId": "P28948-B21",
+    "model": "ProLiant DL360 Gen11",
+    "bmc": { "ip": "10.0.0.5" },
+    "health": { "summary": "CRITICAL", "fans": "OK", "powerSupplies": "CRITICAL", "memory": "OK" }
+  }
+}
+'@ | Set-Content -Encoding ascii raise.json
 
-curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
-  -H "content-type: application/json" -H "$HDR`: $SECRET" --data "@raise.json"
-# → issue opens
+@'
+{
+  "type": "compute-ops-mgmt/server",
+  "id": "P28948-B21+CZ2311004G",
+  "name": "ESX-node-01",
+  "operation": "Updated",
+  "updatedAt": "2025-01-01T10:00:00Z",
+  "hardware": {
+    "serialNumber": "CZ2311004G",
+    "productId": "P28948-B21",
+    "model": "ProLiant DL360 Gen11",
+    "bmc": { "ip": "10.0.0.5" },
+    "health": { "summary": "OK", "fans": "OK", "powerSupplies": "OK" }
+  }
+}
+'@ | Set-Content -Encoding ascii clear.json
 
+# 2. POST the fixtures at the relay ($FQDN/$HDR/$SECRET are the deploy variables
+#    from step 2/3 — re-set them if this is a fresh shell).
 curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
-  -H "content-type: application/json" -H "$HDR`: $SECRET" --data "@clear.json"
-# → same issue closes
+  -H "content-type: application/json" -H "$HDR`: $SECRET" --data "@raise.json"   # → issue opens
+curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
+  -H "content-type: application/json" -H "$HDR`: $SECRET" --data "@clear.json"   # → same issue closes
 ```
+
+**Linux/macOS:**
+
+```bash
+# 1. Write the two fixtures — a raise (health CRITICAL) and a clear (health OK).
+cat > raise.json <<'JSON'
+{
+  "type": "compute-ops-mgmt/server",
+  "id": "P28948-B21+CZ2311004G",
+  "name": "ESX-node-01",
+  "operation": "Updated",
+  "updatedAt": "2025-01-01T10:00:00Z",
+  "hardware": {
+    "serialNumber": "CZ2311004G",
+    "productId": "P28948-B21",
+    "model": "ProLiant DL360 Gen11",
+    "bmc": { "ip": "10.0.0.5" },
+    "health": { "summary": "CRITICAL", "fans": "OK", "powerSupplies": "CRITICAL", "memory": "OK" }
+  }
+}
+JSON
+
+cat > clear.json <<'JSON'
+{
+  "type": "compute-ops-mgmt/server",
+  "id": "P28948-B21+CZ2311004G",
+  "name": "ESX-node-01",
+  "operation": "Updated",
+  "updatedAt": "2025-01-01T10:00:00Z",
+  "hardware": {
+    "serialNumber": "CZ2311004G",
+    "productId": "P28948-B21",
+    "model": "ProLiant DL360 Gen11",
+    "bmc": { "ip": "10.0.0.5" },
+    "health": { "summary": "OK", "fans": "OK", "powerSupplies": "OK" }
+  }
+}
+JSON
+
+# 2. POST the fixtures at the relay ($FQDN/$HDR/$SECRET are the deploy variables
+#    from step 2/3 — re-set them if this is a fresh shell).
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://$FQDN/com/webhook" \
+  -H "content-type: application/json" -H "$HDR: $SECRET" --data "@raise.json"    # → issue opens
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://$FQDN/com/webhook" \
+  -H "content-type: application/json" -H "$HDR: $SECRET" --data "@clear.json"    # → same issue closes
+```
+
+> These fixtures are just static JSON copied from the project's shipped sample
+> builder. If you'd rather **generate** them (or see how they *normalise* into
+> `CanonicalEvent`s) with Python, run `python com-event-core/examples/dump_payloads.py
+> server raise` from a venv (`pip install ./com-event-core`) — it prints the raw
+> COM payload plus the resulting events.
+
+**What you should see.** The `raise` opens a GitHub issue and the `clear` closes
+the **same** issue:
+
+<img src="../../docs/images/com-event-path-b-github-issue.png" alt="Path B result: a GitHub issue titled 'Server ESX-node-01 health CRITICAL', labelled com:server:CZ2311004G:health, opened on the raise and closed as completed with a 'Resolved by COM clear event' comment" width="900" />
+
+The title (**Server ESX-node-01 health CRITICAL**), the
+**`com:server:CZ2311004G:health`** label (the correlation key that ties the raise
+to the clear), the body listing the non-OK component (`powerSupplies=CRITICAL`),
+the **"Resolved by COM clear event"** comment, and the **Closed as completed**
+state all come straight from the two fixtures above.
 
 > First *clear* can occasionally race GitHub's search index (~1s lag); if the
 > issue isn't found the message is abandoned and redelivered, and the retry
