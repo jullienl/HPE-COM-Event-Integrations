@@ -534,7 +534,7 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://<your-fqdn>/com/webhook"
 **What you should see.** The `raise` opens a GitHub issue and the `clear` closes
 the **same** issue:
 
-<img src="../../docs/images/com-event-path-b-github-issue.png" alt="Path B result: a GitHub issue titled 'Server ESX-node-01 health CRITICAL', labelled com:server:CZ2311004G:health, opened on the raise and closed as completed with a 'Resolved by COM clear event' comment" width="900" />
+<a href="../../docs/images/com-event-path-b-github-issue.png"><img src="../../docs/images/com-event-path-b-github-issue.png" alt="Path B result: a GitHub issue titled 'Server ESX-node-01 health CRITICAL', labelled com:server:CZ2311004G:health, opened on the raise and closed as completed with a 'Resolved by COM clear event' comment" width="900" /></a>
 
 The title (**Server ESX-node-01 health CRITICAL**), the
 **`com:server:CZ2311004G:health`** label (the correlation key that ties the raise
