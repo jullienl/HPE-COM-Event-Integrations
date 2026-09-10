@@ -53,6 +53,14 @@ _handler.setFormatter(JsonLogFormatter())
 logging.basicConfig(level=logging.INFO, handlers=[_handler], force=True)
 log = logging.getLogger("com-event-relay")
 
+# The Azure Service Bus AMQP stack logs every connection/session/link state
+# change at INFO (idle-connection teardown + reconnect is routine, not an error),
+# which floods the relay's own logs. Quiet it to WARNING by default; override with
+# AZURE_SDK_LOG_LEVEL (e.g. INFO/DEBUG) when diagnosing Service Bus connectivity.
+logging.getLogger("azure.servicebus").setLevel(
+    os.environ.get("AZURE_SDK_LOG_LEVEL", "WARNING").upper()
+)
+
 # --- Config (fail fast if anything mandatory is missing) -----------------
 COM_SECRET = get_secret("COM_SHARED_SECRET")
 SECRET_HEADER = os.environ.get("SHARED_SECRET_HEADER", "x-shim-secret").lower()
