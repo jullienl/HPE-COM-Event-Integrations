@@ -12,7 +12,7 @@ Use this deployment model when you can expose a public HTTPS endpoint that COM c
 
 ## At a glance
 
-<a href="../docs/images/com-event-bridge-architecture.png"><img src="../docs/images/com-event-bridge-architecture.png" alt="COM Event Bridge architecture" width="800" /></a>
+<img src="../docs/images/com-event-bridge-architecture.png" alt="COM Event Bridge architecture" width="800" />
 
 The Bridge is the **single-box alternative** to [`com-event-relay`](../com-event-relay/).
 

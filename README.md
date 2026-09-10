@@ -15,7 +15,7 @@ It ships as **ready-to-run, multi-architecture container images** (published to 
 
 ## At a glance
 
-<a href="docs/images/at-glance-diagram.png"><img src="docs/images/at-glance-diagram.png" alt="At glance architecture" width="900" /></a>
+<img src="docs/images/at-glance-diagram.png" alt="At glance architecture" width="900" />
 
 Two deployment models are available:
 
@@ -235,7 +235,7 @@ Follow an end-to-end deployment runbook:
 
 Recommended when the target resides in a restricted or private customer network.
 
-<a href="docs/images/com-event-relay-architecture.png"><img src="docs/images/com-event-relay-architecture.png" alt="COM Event Relay architecture" width="800" /></a>
+<img src="docs/images/com-event-relay-architecture.png" alt="COM Event Relay architecture" width="800" />
 
 ### Benefits
 
@@ -262,7 +262,7 @@ See [`com-event-relay`](com-event-relay/) for deployment details and [`end-to-en
 
 Recommended when you can expose a public HTTPS endpoint that COM can reach and want the smallest deployment footprint.
 
-<a href="docs/images/com-event-bridge-architecture.png"><img src="docs/images/com-event-bridge-architecture.png" alt="COM Event Bridge architecture" width="800" /></a>
+<img src="docs/images/com-event-bridge-architecture.png" alt="COM Event Bridge architecture" width="800" />
 
 The bridge performs the complete pipeline in one process:
 
@@ -302,7 +302,7 @@ See [`com-event-bridge`](com-event-bridge/) for deployment details and [`end-to-
 
 # Which deployment should I choose?
 
-<a href="docs/images/com-event-deployment-decision-tree.png"><img src="docs/images/com-event-deployment-decision-tree.png" alt="COM Event Deployment Decision Tree" width="900" /></a>
+<img src="docs/images/com-event-deployment-decision-tree.png" alt="COM Event Deployment Decision Tree" width="900" />
 
 | Option | Use it when |
 |---|---|

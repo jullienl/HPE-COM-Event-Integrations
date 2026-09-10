@@ -12,7 +12,7 @@ Use this deployment model when you want the public webhook edge hosted in Azure 
 
 ## At a glance
 
-<a href="../docs/images/com-event-relay-architecture.png"><img src="../docs/images/com-event-relay-architecture.png" alt="COM Event Relay architecture" width="800" /></a>
+<img src="../docs/images/com-event-relay-architecture.png" alt="COM Event Relay architecture" width="800" />
 
 Cloud mappings:
 
