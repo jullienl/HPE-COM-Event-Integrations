@@ -24,7 +24,7 @@ identical delivery logic.
 | 4 | **Enqueue → queue** | (Relay) Captures the raw event into a durable cloud queue and acks COM immediately, so the public edge never talks to the target. |
 | 5 | **Dequeue ← queue** | (Shim) Pulls events from the queue over an outbound-only connection — no inbound ports on the target network. |
 | 6 | **Normalisation** | Turns the raw COM payload into one or more neutral `CanonicalEvent`s so adapters never see COM's schema; a COM change is fixed here once. A server snapshot yields one event per monitored condition (`SERVER_MONITORS`). |
-| 7 | **De-duplication** | Suppresses repeats within a TTL window (keyed on `dedup_key`, **per target**) so a redelivered/duplicate event doesn't open a second ticket or alert. |
+| 7 | **De-duplication** | Suppresses repeats within a TTL (Time To Live) window (keyed on `dedup_key`, **per target**) so a redelivered/duplicate event doesn't open a second ticket or alert. |
 | 8 | **Correlation** | Tags a problem and its later recovery with the same `correlation_key` (`server:<serial>:<condition>`) and flips `action` raise→clear, so the target auto-closes the exact item it opened. |
 | 9 | **Target forwarding** | Hands each `CanonicalEvent` to the adapter(s) named by `TARGETS` (one or many) via the shared `deliver()` / `deliver_events()`, which maps it to each target system's API call. |
 | 10 | **Retry / redelivery** | (Shim) On a transient failure, `abandon`s the message so the queue redelivers it; malformed input is `dead_letter`ed and never retried. |
