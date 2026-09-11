@@ -64,6 +64,7 @@ class SlackAdapter(TargetAdapter):
             {"type": "mrkdwn",
              "text": f"*Resource:*\n{e.resource_name or e.resource_serial or 'unknown'}"},
             {"type": "mrkdwn", "text": f"*Model:*\n{e.resource_model or 'n/a'}"},
+            {"type": "mrkdwn", "text": f"*Serial:*\n{e.resource_serial or 'n/a'}"},
         ]
         blocks: list[dict] = [
             {"type": "header", "text": {"type": "plain_text", "text": header, "emoji": True}},

@@ -5,8 +5,62 @@ webhook created with **Workflows** (Power Automate) — the current, non-retired
 way to push into Teams. Like Slack, the webhook is post-only, so a **raise** and
 its later **clear** are two messages (the clear is a green "Resolved" card).
 
-Set up the webhook in Teams: channel → Workflows → "Post to a channel when a
-webhook request is received". Copy the generated URL into TEAMS_WEBHOOK_URL.
+What this adapter POSTs to TEAMS_WEBHOOK_URL is the Workflows message envelope
+with the Adaptive Card nested inside — there is **no** top-level ``text`` field:
+
+    {
+      "type": "message",
+      "attachments": [
+        {
+          "contentType": "application/vnd.microsoft.card.adaptive",
+          "content": { ...the Adaptive Card (title, FactSet, buttons)... }
+        }
+      ]
+    }
+
+So in Power Automate the card lives at
+``triggerBody()?['attachments']?[0]?['content']`` and ``triggerBody()?['text']``
+is always empty — do NOT bind a "Post message" action to ``['text']``.
+
+Setting up the Power Automate flow (the only supported path today — the old
+"Incoming Webhook" Office 365 connector is retired):
+
+  1. Teams channel -> **...** (More options) -> **Workflows** (or the standalone
+     **Power Automate** portal, https://make.powerautomate.com -> **Create** ->
+     **Automated cloud flow**).
+  2. **Trigger:** *When a Teams webhook request is received*. Set
+     **Who can trigger the flow?** to **Anyone**. Save once to generate the
+     **HTTP POST URL** — this is your ``TEAMS_WEBHOOK_URL``.
+  3. **Action:** *Post card in a chat or channel*
+       - **Post as:** Flow bot   - **Post in:** Channel
+       - **Team** / **Channel:** pick the destination.
+       - **Adaptive Card** (this is the field that must match our payload):
+         switch it to the expression editor and enter
+
+             string(triggerBody()?['attachments']?[0]?['content'])
+
+         The ``string(...)`` wrap is required because the *Adaptive Card* input
+         is a string field while the extracted ``content`` is a JSON object.
+  4. (Optional) Password-protect the trigger with a trigger condition on a
+     custom header, e.g.
+         @equals(triggerOutputs()?['headers']['X-Trigger-Secret'], 'my-secret')
+     Note: this adapter does not send that header yet, so leave the condition
+     off unless you also add the header to the request.
+  5. Save. POST a raise/clear through the shim (or curl the envelope above) to
+     confirm the card renders.
+
+Why not bind to ``triggerBody()?['text']``? Because the adapter sends a card,
+not a plain string. If you specifically need the simple *Post message in a chat
+or channel* action (plain text), bind its message to the card's title instead:
+
+    triggerBody()?['attachments']?[0]?['content']?['body']?[0]?['text']
+
+(that yields "<prefix> - <title>" only, dropping the FactSet, colour and the
+Open iLO / Open HPE GreenLake buttons).
+
+Set up the webhook in Teams: channel -> Workflows -> "Post to a channel when a
+webhook request is received" (or build the flow above). Copy the generated URL
+into TEAMS_WEBHOOK_URL.
 
 Env:
   TEAMS_WEBHOOK_URL   Workflows webhook URL (required, secret).
