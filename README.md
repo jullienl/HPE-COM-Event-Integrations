@@ -1,10 +1,13 @@
 # HPE COM Event Integrations
 
-Securely integrate **HPE Compute Ops Management (COM)** webhook events with **ITSM, ITOM, SIEM, SOAR, ChatOps, incident-response, and observability platforms** — with webhook validation, authentication, payload normalisation, de-duplication, reliable delivery, raise/clear correlation, and an architecture option that requires **no inbound network port into the customer environment**.
+Securely integrate **HPE Compute Ops Management (COM)** webhook events with **ITSM, ITOM, SIEM, SOAR, ChatOps, incident-response, and observability platforms** such as **HaloITSM**, **Jira Service Management, Splunk, Microsoft Sentinel, OBM, DataDog, Microsoft Teams, Slack, or any webhook-compatible target**.
 
-The framework uses a shared `CanonicalEvent` model and pluggable **target adapters** — small components that translate a COM event into the API of a specific destination platform (ServiceNow, Splunk, OBM, and others) — so COM-specific processing is implemented once and the same delivery logic can be reused across many operational platforms.
+The framework provides webhook validation, authentication, payload normalization, de-duplication, reliable delivery, raise/clear event correlation, and multiple deployment options — including an architecture that requires **no inbound network ports to be opened**.
 
-It ships as **ready-to-run, multi-architecture container images** (published to GHCR) that are configured entirely through environment variables and secrets — deploy quickly by passing your own parameters, with no code changes and nothing to build first.
+The framework uses a shared `CanonicalEvent` model and a **rich, growing library of pluggable target adapters** — small, reusable components that translate normalized COM events into the API or webhook format expected by each destination. A single COM event can be **delivered simultaneously to multiple targets**, allowing the same event to trigger different workflows across ITSM, SIEM, monitoring, and collaboration platforms. COM-specific processing is implemented only once, while the same normalization, correlation, retry, and delivery logic is reused across all configured destinations. **New adapters can typically be added in minutes rather than days, with only a small amount of target-specific code.**
+
+It ships as **ready-to-run, multi-architecture container images** published to **GitHub Container Registry (GHCR)** and configured entirely through environment variables and secrets — deploy quickly by passing your own parameters, with no code changes and nothing to build first.
+
 
 > **Reference implementation**
 >
@@ -161,32 +164,14 @@ With this model, **no inbound network path is required into the customer environ
 
 The core architecture intentionally separates COM-specific logic from target-specific logic.
 
-```mermaid
-flowchart LR
-    COM[COM Webhook] --> VERIFY[Handshake + Auth]
-    VERIFY --> PARSE[COM Parser / Normaliser]
-    PARSE --> EVENT[CanonicalEvent]
-    EVENT --> DEDUP[De-dup + Correlation]
-
-    DEDUP --> SN[ServiceNow]
-    DEDUP --> JIRA[Jira]
-    DEDUP --> OR[OpsRamp]
-    DEDUP --> OBM[OBM]
-    DEDUP --> SPL[Splunk]
-    DEDUP --> DD[Datadog]
-    DEDUP --> OTHER[Other Adapters]
-```
+<img src="docs/images/how-it-works-diagram.png" alt="At glance architecture" width="900" />
 
 A new integration generally does **not** require changing the COM webhook receiver.
 
 Instead, a target adapter maps:
 
-```text
-CanonicalEvent
-      |
-      v
-Target-specific API request
-```
+<img src="docs/images/target-adapter-map-diagram.png" alt="At glance architecture" width="400" />
+
 
 This keeps the COM contract, de-duplication, correlation, and delivery behavior consistent across adapters.
 
@@ -348,7 +333,7 @@ This means there is **no inbound connection from COM into the customer network**
 | Target adapter execution | ✅ | — | ✅ |
 | Retry | ✅ via spool | Queue-driven | ✅ via redelivery |
 | Durable buffer | Local spool | Cloud queue | Consumes cloud queue |
-| Public HTTPS endpoint | ✅ | ✅ managed edge | — |
+| Public HTTPS endpoint | ✅ you operate | ✅ platform-managed | — |
 | Inbound customer-network path | Required | — | **Not required** |
 
 ---
@@ -365,7 +350,7 @@ All target adapters are implemented once in [`com-event-core`](com-event-core/) 
 
 For the full list of supported platforms and their per-adapter details — category, role, authentication, whether COM offers a native integration, how a clear is delivered, and validation status — see the [supported-adapters table in `com-event-core`](com-event-core/README.md#supported-adapters), the single source of truth.
 
-> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending is **validation against a live product**: only the **GitHub adapter** has been exercised end-to-end against a real target so far; the others have not yet been tested against a live instance (for lack of licensed lab environments). Validate each adapter against your own environment before production use.
+> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending for most is **validation against a live product**: the **GitHub**, **Slack**, and **Teams** adapters have been exercised end-to-end against a real target so far; the others have not yet been tested against a live instance (standing up every one of these platforms in a lab isn't feasible, and several also require paid licenses). Validate each adapter against your own environment before production use.
 >
 > 🙋 Contributions and live-tenant validation feedback are welcome. 
 
@@ -378,53 +363,36 @@ For the full list of supported platforms and their per-adapter details — categ
 - **Add your own adapter** if the target needs a specific API or payload shape — see [adding a new target](com-event-core/README.md#adding-a-new-target).
 
 
-
 ## Selecting one or more targets
 
-Adapters are selected with the `TARGETS` environment variable, supplied to the container like any other setting. Use one name, or several comma-separated to fan one COM event out to each target:
+Target adapters are selected with the `TARGETS` environment variable. Specify a single adapter or a comma-separated list to deliver each COM event to multiple destinations:
 
 ```bash
 TARGETS=<name>
 TARGETS=<name>,<name>,<name>
 ```
 
-For example, running the Bridge image and selecting the `servicenow` and `splunk` adapters:
+For example, to deliver events to Splunk, Microsoft Teams, and Jira Service Management:
 
 ```bash
-docker run -d \
-  --name com-event-bridge \
-  -p 8080:8080 \
-  -v bridge-data:/data \
-  -e COM_SHARED_SECRET=change-me \
-  -e TARGETS=servicenow,splunk \
-  ghcr.io/jullienl/com-event-bridge:latest
+TARGETS=splunk,teams,jira
 ```
 
-Each adapter also reads its own connection settings (URLs, credentials, tokens) from environment variables or mounted secret files — see [`com-event-core`](com-event-core/) and the project READMEs for the full list.
+Each adapter reads its own connection settings — URLs, credentials, tokens, and other target-specific parameters — from environment variables or mounted secret files. See [`com-event-core`](com-event-core/) and the individual project READMEs for configuration details.
 
-### Fan-out to several targets
+### Multi-target delivery behavior
 
-One COM event can be delivered to several different adapters without running a separate COM receiver for every target:
+Each target is processed independently. De-duplication and raise/clear state are tracked per adapter, so the failure of one destination does not cause successful deliveries to be repeated.
 
-```bash
-TARGETS=halo
-TARGETS=halo,opsramp
-TARGETS=servicenow,splunk
-TARGETS=github,slack
-TARGETS=sentinel,pagerduty,teams
-```
+If one target is temporarily unavailable:
 
-**Independent delivery.** De-duplication and raise/clear state are tracked per adapter, so a successful target is not resent simply because another target failed.
-
-**Safe partial failure.** If one target is unavailable:
-
-1. successful targets remain successful
+1. deliveries to the other targets remain successful
 2. the failed adapter is retried
-3. successful target deliveries are not duplicated
+3. successful deliveries are not duplicated
 
-**Use durable delivery for important fan-out.** Multi-target delivery should use the Relay + Shim queue or Bridge spool mode. Bridge `sync` mode is best-effort and does not provide durable retry.
+For reliable multi-target delivery, use the **Relay + Shim** queue or **Bridge spool mode**. Bridge `sync` mode is best-effort and does not provide durable retry.
 
-**Current limitation.** Multiple instances of the **same adapter type** (for example, two generic webhook adapters) are not yet supported because adapters currently use global environment-variable names. Support for per-instance adapter configuration is listed in the [Roadmap](#roadmap).
+> **Current limitation:** Multiple instances of the same adapter type — for example, two generic webhook targets or two Slack destinations — are not yet supported because adapters currently use global environment-variable names. Per-instance adapter configuration is listed in the [Roadmap](#roadmap).
 
 ---
 

@@ -87,6 +87,22 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   old mark-on-check `is_duplicate()` was removed because a transient failure +
   retry got wrongly suppressed → **silent event loss**. Always use the two-phase
   `already_done()` / `mark_done()` pair on a delivery path.
+- **`dedup_key` is per-`(correlation_key, action, severity)`; TTL is a flat
+  per-key window, NOT incident state.** `DedupStore` is a flat SQLite set of
+  `(dedup_key, seen_at)` rows, each living independently for `DEDUP_TTL_SECONDS`
+  (default 3600). A `raise` and its `clear` hash to **different** keys (action
+  differs), so delivering the clear NEVER resets/expires the raise row — and
+  replaying the **same** raise within the TTL is suppressed (and `mark_done` is
+  `INSERT OR REPLACE`, so each repeat *refreshes* `seen_at`, pushing the window
+  forward). Consequence for a `raise → clear → raise` test loop: it opens once,
+  closes, then the 2nd raise is still deduped until the hour elapses. This is
+  client-independent (curl/Postman/real COM all hash identical bytes to the same
+  key). To replay freely in testing: `DEDUP_TTL_SECONDS=0` (off) or a short
+  window, restart the ephemeral `--rm` shim (empty store), or vary the payload
+  (`hardware.serialNumber` / `health.summary`). Keep `3600` in prod — it's the
+  intended "don't re-alert for the same ongoing problem / ignore redeliveries"
+  window, NOT a bug. General rule: TTL dedup is duplicate-suppression, not a
+  state machine — never assume a clear "reopens" a raise key.
 - **Partial failure → `PartialDeliveryError`.** `deliver()` keeps going past a
   failing adapter, marks the ones that succeed, then raises. Callers retry the
   whole event (spool reschedule / queue `abandon`); already-done adapters are

@@ -613,8 +613,8 @@ The **Category** column groups adapters by the kind of platform they target:
 | `elastic` | SIEM / log | Elasticsearch document | API key / Basic | — | Indexed as another document | ⚠️ Validate |
 | `sentinel` | SIEM | Microsoft Sentinel / Log Analytics | Workspace credentials | — | Ingested as another record | ⚠️ Validate |
 | `pagerduty` | Incident response | PagerDuty Events API v2 | Routing key | — | Sends `resolve` using the same `dedup_key` | ⚠️ Validate |
-| `slack` | ChatOps | Slack incoming webhook | Webhook URL | — | Posts a resolved notification | ⚠️ Validate |
-| `teams` | ChatOps | Microsoft Teams Workflow webhook | Webhook URL | — | Posts a resolved card | ⚠️ Validate |
+| `slack` | ChatOps | Slack incoming webhook | Webhook URL | — | Posts a resolved notification | ✅ |
+| `teams` | ChatOps | Microsoft Teams Workflow webhook | Webhook URL | — | Posts a resolved card | ✅ |
 | `github` | Issue tracking | GitHub Issues | PAT | — | Closes the matching issue | ✅ |
 | `datadog` | Monitoring | Datadog Events API | API key | — | Posts a recovery/success event | ⚠️ Validate |
 | `dynatrace` | Monitoring | Dynatrace Events API v2 | API token | — | Posts a recovery event | ⚠️ Validate |
@@ -622,7 +622,7 @@ The **Category** column groups adapters by the kind of platform they target:
 | `webhook` | Generic | Canonical JSON POST | Optional custom header | — | Sends the canonical clear event | ⚠️ Validate |
 
 
-> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending is **validation against a live product**: only the **GitHub adapter** has been exercised end-to-end against a real target so far; the others have not yet been tested against a live instance (for lack of licensed lab environments). Validate each adapter against your own environment before production use. Useful validation feedback includes authentication, payload acceptance, object creation, de-duplication, raise/clear behavior, and tenant-specific settings. Tenant-specific tuning is covered in [Known per-target tuning](#known-per-target-tuning).
+> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending for most is **validation against a live product**: the **GitHub**, **Slack**, and **Teams** adapters have been exercised end-to-end against a real target so far; the others have not yet been tested against a live instance (standing up every one of these platforms in a lab isn't feasible, and several also require paid licenses). Validate each adapter against your own environment before production use. Useful validation feedback includes authentication, payload acceptance, object creation, de-duplication, raise/clear behavior, and tenant-specific settings. Tenant-specific tuning is covered in [Known per-target tuning](#known-per-target-tuning).
 >
 > 🙋 Contributions and live-tenant validation feedback are welcome. If you face any issue with an adapter integration, please [open an issue](https://github.com/jullienl/HPE-COM-Event-Integrations/issues) in the project.
 
@@ -668,9 +668,10 @@ one file shows its full contract in a few lines:
 - `os.environ.get("VAR", "default")` → **optional** with a default
 - `get_secret("VAR")` → **secret** (accepts `VAR` or `VAR_FILE`)
 
-> **Two gotchas.** Only `github` is validated end-to-end, so instance-specific
-> vars (Halo status ids, Jira transition, ServiceNow table, …) may need tuning
-> for your system — see [Known per-target tuning](#known-per-target-tuning). And
+> **Two gotchas.** Only `github`, `slack`, and `teams` are validated end-to-end,
+> so other adapters' instance-specific vars (Halo status ids, Jira transition,
+> ServiceNow table, …) may need tuning for your system — see [Known per-target
+> tuning](#known-per-target-tuning). And
 > because config uses fixed global var names (`GITHUB_REPO`), you can't run two
 > instances of the **same** adapter type with different settings yet.
 
@@ -1156,7 +1157,9 @@ WEBHOOK__ARCHIVE_URL=...
 
 ## Live-target validation
 
-Most adapters need broader live-tenant testing.
+The `github`, `slack`, and `teams` adapters have been validated end-to-end
+against live targets; the remaining adapters still need broader live-tenant
+testing.
 
 ## Tenant-specific workflows
 

@@ -450,6 +450,20 @@ block for your shell.
 > without `health`, this snapshot is (correctly) ignored — post a fixture for a
 > condition you *do* monitor instead.
 
+> **Replaying the loop? Mind the de-dup window.** The bridge de-duplicates on
+> `correlation_key + action + severity`, so posting the **same** `raise.json`
+> again within `DEDUP_TTL_SECONDS` (default **3600s / 1 hour**) is suppressed —
+> **no new issue** — and each repeat *refreshes* the window. The `clear` is a
+> **separate** key (action `clear`), so it always closes the open issue, but it
+> does **not** reset the raise key — so a `raise → clear → raise` loop opens once,
+> closes, then the second raise is still deduped until the hour elapses. This is
+> client-independent (curl, Postman, or a real COM event all hash to the same
+> key). To loop freely while testing, set **`DEDUP_TTL_SECONDS=0`** (dedup off) or
+> a short window like `DEDUP_TTL_SECONDS=5` in the bridge env; alternatively vary
+> the payload (`hardware.serialNumber` / `health.summary`). Leave the `3600`
+> default in production — that 1-hour suppression is the intended "don't re-alert
+> for the same ongoing problem / ignore queue redeliveries" behaviour.
+
 **Linux/macOS:**
 
 ```bash
