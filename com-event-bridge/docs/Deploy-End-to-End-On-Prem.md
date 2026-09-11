@@ -12,12 +12,12 @@ relay + queue + outbound shim, **one container** does the whole pipeline —
 receive, transform, forward — with an on-disk **spool** as the durable buffer.
 
 ```
-COM ──webhook──►  [ nginx :443 (TLS) ]──►  [ BRIDGE :8080 ]──► spool (SQLite)
-(public HTTPS)      cert + rate-limit        handshake + secret        │
-                    (you host this)          normalise + deliver       │ (background worker)
-                                                                       ▼
-                                                             GitHub Issues
-                                                    (open on raise / close on clear)
+COM   ──webhook──►   [ nginx :443 (TLS) ]  ──►  [ BRIDGE :8080 ]  ──►   spool (SQLite)
+    (public HTTPS)    cert + rate-limit         handshake + secret        │
+                       (you host this)          normalise + deliver       │ (background worker)
+                                                                          ▼
+                                                                    GitHub Issues
+                                                           (open on raise / close on clear)
 ```
 
 **What you deploy where — all on one box you own**

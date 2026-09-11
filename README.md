@@ -531,6 +531,9 @@ Planned or candidate improvements include:
 - **More target adapters**  
   New integrations remain small `CanonicalEvent -> target API` mappings in `com-event-core`.
 
+- **HPE GreenLake (GLP) eventing-framework webhooks**  
+  Extend the same relay/bridge to also receive HPE GreenLake webhooks alongside COM. 
+
 - **Additional shim deployment helpers**  
   Provide ready-made ways to run the on-prem outbound shim as a supervised, auto-restarting service — for example a `systemd` unit for bare-metal/VM hosts and a Compose/Kubernetes manifest for container hosts — so it survives reboots and crashes without manual intervention.
 
