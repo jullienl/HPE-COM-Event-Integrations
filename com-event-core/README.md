@@ -606,7 +606,7 @@ The **Category** column groups adapters by the kind of platform they target:
 |---|---|---|---|:---:|---|:---:|
 | `servicenow` | ITSM | Event Management or incident creation | Basic | ✅ | Sends a clear event / resolves the correlated incident | ⚠️ Validate |
 | `halo` | ITSM | HaloITSM ticket / incident | OAuth2 | — | Closes the matching ticket (by `thirdpartyref`) | ⚠️ Validate |
-| `jira` | ITSM | Jira Service Management / Jira issue | Email + API token | — | Runs the configured close transition | ⚠️ Validate |
+| `jira` | ITSM | Jira Service Management / Jira issue | Email + API token | — | Runs the configured close transition | ✅ |
 | `bmc_helix` | ITSM | BMC Helix / Remedy incident | JWT | — | Marks the correlated incident resolved | ⚠️ Validate |
 | `opsramp` | ITOM / AIOps | Alert / event ingestion | OAuth2 | ✅ | Sends state `Ok` using the same alert key | ⚠️ Validate |
 | `obm` | ITOM | OpenText OBM event | Basic | — | Sends normal/closed using the same correlation key | ⚠️ Validate |
@@ -623,7 +623,7 @@ The **Category** column groups adapters by the kind of platform they target:
 | `webhook` | Generic | Canonical JSON POST | Optional custom header | — | Sends the canonical clear event | ⚠️ Validate |
 
 
-> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending for most is **validation against a live product**: the **GitHub**, **Slack**, and **Teams** adapters have been exercised end-to-end against a real target so far; the others have not yet been tested against a live instance (standing up every one of these platforms in a lab isn't feasible, and several also require paid licenses). Validate each adapter against your own environment before production use. Useful validation feedback includes authentication, payload acceptance, object creation, de-duplication, raise/clear behavior, and tenant-specific settings. Tenant-specific tuning is covered in [Known per-target tuning](#known-per-target-tuning).
+> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending for most is **validation against a live product**: the **GitHub**, **Slack**, **Teams**, and **Jira** adapters have been exercised end-to-end against a real target so far (raise *and* clear); the others have not yet been tested against a live instance (standing up every one of these platforms in a lab isn't feasible, and several also require paid licenses). Validate each adapter against your own environment before production use. Useful validation feedback includes authentication, payload acceptance, object creation, de-duplication, raise/clear behavior, and tenant-specific settings. Tenant-specific tuning is covered in [Known per-target tuning](#known-per-target-tuning).
 >
 > 🙋 Contributions and live-tenant validation feedback are welcome. If you face any issue with an adapter integration, please [open an issue](https://github.com/jullienl/HPE-COM-Event-Integrations/issues) in the project.
 
@@ -669,8 +669,8 @@ one file shows its full contract in a few lines:
 - `os.environ.get("VAR", "default")` → **optional** with a default
 - `get_secret("VAR")` → **secret** (accepts `VAR` or `VAR_FILE`)
 
-> **Two gotchas.** Only `github`, `slack`, and `teams` are validated end-to-end,
-> so other adapters' instance-specific vars (Halo status ids, Jira transition,
+> **Two gotchas.** Only `github`, `slack`, `teams`, and `jira` are validated
+> end-to-end, so other adapters' instance-specific vars (Halo status ids,
 > ServiceNow table, …) may need tuning for your system — see [Known per-target
 > tuning](#known-per-target-tuning). And
 > because config uses fixed global var names (`GITHUB_REPO`), you can't run two
@@ -694,6 +694,14 @@ than a 404, because to that site the key genuinely doesn't exist. Auth is fine
 `JIRA_ISSUE_TYPE` must exist **in that project**. The default `Incident` is a
 Jira Service Management type — Jira Software/Business projects ship `Task`,
 `Bug`, `Story`, `Epic` instead, and an invalid name is another `400`.
+
+`JIRA_PROJECT_KEY` is **case-sensitive**: Jira stores keys upper-case, so
+`COMEvent` fails with the same `400 {"errors":{"project":"valid project is
+required"}}` as a wrong site while looking perfectly plausible in a
+`docker run -e …` line. Copy it verbatim from the address bar.
+
+The end-to-end validation for this adapter ran against a Jira **Software**
+Cloud project with `JIRA_ISSUE_TYPE=Task` and `JIRA_CLOSE_TRANSITION=Done`.
 
 Confirm all three against the live site before deploying:
 
@@ -1283,9 +1291,13 @@ WEBHOOK__ARCHIVE_URL=...
 
 ## Live-target validation
 
-The `github`, `slack`, and `teams` adapters have been validated end-to-end
-against live targets; the remaining adapters still need broader live-tenant
-testing.
+The `github`, `slack`, `teams`, and `jira` adapters have been validated
+end-to-end against live targets — both the raise and the clear path. The
+remaining adapters still need broader live-tenant testing.
+
+The Jira validation ran against a Jira **Software** Cloud project
+(`JIRA_ISSUE_TYPE=Task`, `JIRA_CLOSE_TRANSITION=Done`); see [Jira](#jira) for
+the per-tenant values you are most likely to have to change.
 
 ## Tenant-specific workflows
 

@@ -172,6 +172,23 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   before blaming the payload. Related: `JIRA_ISSUE_TYPE` defaults to `Incident`,
   which exists only in **JSM** projects — Software/Business ship `Task`/`Bug`/
   `Story`/`Epic`, so confirm via `/issue/createmeta`.
+- **A vendor identifier the GUI normalises can be CASE-SENSITIVE in the API, and
+  it fails with the SAME error as a wrong tenant.** `JIRA_PROJECT_KEY=COMEvent`
+  (retyped from memory) returns the identical
+  `400 {"errors":{"project":"valid project is required"}}` as the wrong-site
+  case, because to the API `COMEvent` simply is not a key — Jira stores keys
+  upper-case. Three *different* faults (wrong site, wrong case, invalid issue
+  type) collapse onto one message, so never conclude from the message alone:
+  prove each input independently (`GET /project/<KEY>` == `200`, then
+  `/issue/createmeta`), and copy identifiers verbatim from the address bar
+  instead of retyping them into a `docker run -e` line.
+- **Confirm the RUNNING artifact contains the fix before re-diagnosing.** After
+  `_check()` was added, the shim still logged the old `raise_for_status()`
+  wording — the container was a stale image built before that commit, so a round
+  was spent re-analysing a bug already fixed in the tree. The tell is the
+  message's *shape*, not its content. Verify with
+  `docker run --rm --entrypoint sh <img> -c "grep -c '<new symbol>' <path>"`
+  (`0` = stale) before trusting any log it emits.
 
 ## Outbound TLS through an intercepting proxy (critical)
 
