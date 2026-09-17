@@ -48,6 +48,30 @@ log = logging.getLogger("com_event_core.adapter.jira")
 _LABEL_SANITISE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
+def _check(r: httpx.Response, what: str) -> None:
+    """Raise on a failed Jira call, including the body Jira sent back.
+
+    ``raise_for_status()`` alone reports only the status line, but Jira explains
+    *which* field it rejected in the response body (``errorMessages`` /
+    ``errors``). Without it a 400 on issue create is indistinguishable between a
+    bad issue type, a field missing from the project's create screen, and a bad
+    label — so always surface it.
+    """
+    if not r.is_error:
+        return
+    detail = ""
+    try:
+        body = r.json()
+        parts = list(body.get("errorMessages") or [])
+        parts += [f"{k}: {v}" for k, v in (body.get("errors") or {}).items()]
+        detail = "; ".join(parts)
+    except ValueError:
+        detail = r.text[:500]
+    raise RuntimeError(
+        f"Jira {what} failed: HTTP {r.status_code}{' - ' + detail if detail else ''}"
+    )
+
+
 class JiraAdapter(TargetAdapter):
     name = "jira"
 
@@ -111,7 +135,7 @@ class JiraAdapter(TargetAdapter):
         r = client.post(
             f"{self._api}/rest/api/3/issue", json={"fields": fields}, headers=self._headers
         )
-        r.raise_for_status()
+        _check(r, f"issue create (project {self._project}, type {self._issue_type})")
 
     def _close(self, client: httpx.Client, e: CanonicalEvent) -> None:
         """Find open issue(s) with this correlation label and transition to done.
@@ -133,7 +157,7 @@ class JiraAdapter(TargetAdapter):
             json={"jql": jql, "maxResults": 50},
             headers=self._headers,
         )
-        r.raise_for_status()
+        _check(r, "issue search")
         keys = [it.get("key") or it["id"] for it in r.json().get("issues", [])]
         if not keys:
             log.info("no open Jira issue for %s; nothing to close", label)
@@ -146,7 +170,7 @@ class JiraAdapter(TargetAdapter):
         tr = client.get(
             f"{self._api}/rest/api/3/issue/{key}/transitions", headers=self._headers
         )
-        tr.raise_for_status()
+        _check(tr, f"transition lookup on {key}")
         wanted = self._close_transition.strip().lower()
         match = next(
             (t for t in tr.json().get("transitions", [])
@@ -164,4 +188,4 @@ class JiraAdapter(TargetAdapter):
             json={"transition": {"id": match["id"]}},
             headers=self._headers,
         )
-        r.raise_for_status()
+        _check(r, f"transition '{self._close_transition}' on {key}")

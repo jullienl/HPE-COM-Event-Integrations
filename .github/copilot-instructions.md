@@ -150,6 +150,55 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   endpoint is current (Atlassian: developer.atlassian.com/changelog). Prefer
   omitting optional request knobs you don't need (`fields`, `validateQuery`) —
   each one is extra surface that a successor API can reject.
+- **`raise_for_status()` THROWS AWAY the vendor's explanation — never ship it on
+  an adapter call.** Jira answers a rejected create with
+  `{"errors":{"project":"valid project is required"}}`, but the logged error was
+  only `Client error '400 Bad Request' for url .../rest/api/3/issue`, which is
+  indistinguishable between a bad project, a bad issue type and a field missing
+  from the create screen. Every adapter HTTP call must go through a helper that,
+  on `r.is_error`, parses the body and raises with it (`_check()` in
+  [jira.py](../com-event-core/com_event_core/adapters/jira.py)); fall back to
+  `r.text[:500]` when the body isn't JSON. Rule: a delivery-path error message
+  that doesn't name the rejected field costs an entire debugging round-trip.
+- **A tenant/site id and a resource id are SEPARATE config — the wrong site fails
+  as a FIELD error, not a 404.** `JIRA_URL` must be the Atlassian **site**
+  (`https://acme.atlassian.net`), read from the browser address bar; one account
+  commonly has several sites (prod + sandbox). Pointing at the wrong one makes
+  create fail `400 project: valid project is required` and `GET /project/<KEY>`
+  return `404 "No project could be found"` — i.e. it looks exactly like a wrong
+  key or a payload bug, while the GUI shows the project perfectly. Auth being
+  fine (`401` would say otherwise) is the clue that the *address* is wrong, not
+  the credential. Verify with `GET {site}/rest/api/3/project/{KEY}` == `200`
+  before blaming the payload. Related: `JIRA_ISSUE_TYPE` defaults to `Incident`,
+  which exists only in **JSM** projects — Software/Business ship `Task`/`Bug`/
+  `Story`/`Epic`, so confirm via `/issue/createmeta`.
+
+## Outbound TLS through an intercepting proxy (critical)
+
+- **`httpx` verifies against `certifi`, NOT the OS trust store — so a corporate
+  TLS-inspecting proxy breaks every adapter while the browser works fine.**
+  Symptom: `forward to <adapter> FAILED: [SSL: CERTIFICATE_VERIFY_FAILED]
+  certificate verify failed: unable to get local issuer certificate`. The proxy
+  re-signs the connection with an internal CA that `certifi` doesn't carry.
+- **Fix is deployment config, not code: set `SSL_CERT_FILE`.** `httpx`'s
+  `create_ssl_context()` honours `SSL_CERT_FILE` / `SSL_CERT_DIR` whenever
+  `trust_env=True` (the default, and what our adapters use) — verified in
+  httpx 0.28 `_config.py`. Never add a `verify=False` escape hatch: adapter
+  requests carry credentials.
+- **The bundle must be MERGED (internal CA + public roots) because `cafile=`
+  REPLACES the trust store rather than adding to it.** A file containing only the
+  corporate CA silently breaks every other target. Build it by exporting the
+  Windows stores (`Cert:\{LocalMachine,CurrentUser}\{Root,CA}`, de-duped by
+  thumbprint) and appending `certifi.where()`.
+- **Interception is SELECTIVE by destination, so "other traffic works" proves
+  nothing.** The shim's Service Bus/SQS connection kept working while Jira
+  failed. Expect the same error on each *new* target added — treat
+  `SSL_CERT_FILE` as standard on-prem deployment config, not a per-adapter
+  workaround.
+- **Validate the bundle against the REAL target, not just by parsing it.**
+  `ssl.create_default_context(cafile=...)` loading N certs only proves the file
+  is well-formed; `httpx.get("https://<target>/...")` returning `200` under
+  `SSL_CERT_FILE` proves the chain actually satisfies the proxy.
 
 ## Server snapshots + multi-condition monitoring (critical)
 

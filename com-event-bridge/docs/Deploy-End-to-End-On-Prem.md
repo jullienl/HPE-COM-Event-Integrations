@@ -588,9 +588,18 @@ state all come straight from the two fixtures above.
 | Bridge returns `413` | Body too large | Raise `MAX_BODY_BYTES` **and** nginx `client_max_body_size` together if you genuinely send large payloads. |
 | Bridge returns `503` on POST | Spool full (backpressure) or `sync` target down | In spool mode: backlog exceeded `SPOOL_MAX_BYTES` — the target has been down; check the worker logs. In sync mode: the target is unreachable (event lost — prefer spool). |
 | `/readyz` returns `503` | Spool worker died | Check `docker compose logs bridge`; restart the service. |
+| Forward fails with `CERTIFICATE_VERIFY_FAILED` / `unable to get local issuer certificate` | TLS-inspecting corporate proxy re-signs the connection with an internal CA the container doesn't trust (a browser on the same machine works) | Mount a CA bundle (internal CA **+** public roots) and set `SSL_CERT_FILE` to it — no code change needed. Full recipe: [TLS interception (corporate proxy)](../../com-event-core/README.md#tls-interception-corporate-proxy). |
 | No GitHub issue appears | Token/repo/scope | Verify `GITHUB_REPO=owner/repo` and the PAT has **Issues: read/write**. Watch the bridge logs for the forward error. |
 | Issue opens but never closes | Clear not delivered / label mismatch | Confirm a *clear* event fired; the bridge matches the open issue by its `com:<correlation_key>` label. |
 | Webhook shows WARNING/ERROR in COM | Repeated non-2xx from the bridge | In spool mode the bridge returns `202` fast; if you see `5xx`, check the spool/worker — sustained failures **disable** the webhook. |
+
+> **Read the target's status code before the retry count.** The spool worker
+> reschedules a failed delivery with backoff whether the cause is transient or
+> permanent — it can't tell them apart. A **stable 4xx repeating identically** is
+> a config or code problem that retries will never fix (wrong project/repo,
+> removed API endpoint); only a varying or `5xx` code indicates a real outage.
+> Symptom of the former: a growing spool backlog with the same status logged
+> every attempt.
 
 Handy commands:
 

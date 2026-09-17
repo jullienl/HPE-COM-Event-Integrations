@@ -928,9 +928,16 @@ state all come straight from the two fixtures above.
 | App Runner stuck `CREATE_FAILED` | Bad image id, port, or role | Check the ECR image identifier, `Port=8080`, and that the instance role trust policy names `tasks.apprunner.amazonaws.com`. |
 | Shim exits immediately | Missing required env | It fails fast if `SQS_QUEUE_URL` is unset (sqs backend). Check the queue URL + credentials. |
 | Shim: `AccessDenied` on receive | IAM policy too narrow | The consume policy needs `ReceiveMessage`, `DeleteMessage`, `ChangeMessageVisibility`, `GetQueueAttributes` on the queue ARN. |
+| Shim: `CERTIFICATE_VERIFY_FAILED` / `unable to get local issuer certificate` on **forward to a target** | TLS-inspecting corporate proxy re-signs the connection with an internal CA the container doesn't trust (a browser on the same machine works) | Mount a CA bundle (internal CA **+** public roots) and set `SSL_CERT_FILE` to it — no code change needed. Full recipe: [TLS interception (corporate proxy)](../../com-event-core/README.md#tls-interception-corporate-proxy). |
 | No GitHub issue appears | Token/repo/scope | Verify `GITHUB_REPO=owner/repo` and the PAT has **Issues: read/write** on that repo. Watch the shim logs for the forward error. |
 | Issue opens but never closes | Clear not delivered / label mismatch | Confirm a *clear* event actually fired; the shim matches the open issue by its `com:<correlation_key>` label. |
 | Webhook shows WARNING/ERROR in COM | Repeated non-2xx from the relay | The relay should return `202` fast; if you see `5xx`, fix the queue/role first — sustained failures **disable** the webhook. |
+
+> **Read the target's status code before the retry count.** A failing forward is
+> retried (`abandoning for retry`) whether the cause is transient or permanent —
+> `deliver()` can't tell them apart. A **stable 4xx repeating identically** is a
+> config or code problem that retries will never fix (wrong project/repo, removed
+> API endpoint); only a varying or `5xx` code indicates a real target outage.
 
 Handy log/inspection commands:
 

@@ -36,6 +36,7 @@ It contains the COM event normalisation, `CanonicalEvent` model, de-duplication,
   - [Adapter reference table](#adapter-reference-table)
   - [Finding an adapter's environment variables](#finding-an-adapters-environment-variables)
 - [Known per-target tuning](#known-per-target-tuning)
+- [TLS interception (corporate proxy)](#tls-interception-corporate-proxy)
 - [Usage](#usage)
 - [Example: COM event to CanonicalEvent](#example-com-event-to-canonicalevent)
 - [What each adapter sends](#what-each-adapter-sends)
@@ -681,6 +682,33 @@ one file shows its full contract in a few lines:
 
 ## Jira
 
+`JIRA_URL` is the **Atlassian site** the project lives on, not the project URL.
+Read it from your browser's address bar — `https://acme.atlassian.net/jira/software/projects/OPS`
+means `JIRA_URL=https://acme.atlassian.net` and `JIRA_PROJECT_KEY=OPS`. One
+account often has access to several sites (e.g. a production tenant *and* a
+sandbox), and pointing at the wrong one fails in a **misleading** way: issue
+create returns `400 {"errors":{"project":"valid project is required"}}` rather
+than a 404, because to that site the key genuinely doesn't exist. Auth is fine
+(a bad token gives `401`), so the error looks like a payload bug.
+
+`JIRA_ISSUE_TYPE` must exist **in that project**. The default `Incident` is a
+Jira Service Management type — Jira Software/Business projects ship `Task`,
+`Bug`, `Story`, `Epic` instead, and an invalid name is another `400`.
+
+Confirm all three against the live site before deploying:
+
+```bash
+PAIR=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+
+# Project reachable? 200 = key + site + permissions all correct.
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Basic $PAIR" \
+  "$JIRA_URL/rest/api/3/project/$JIRA_PROJECT_KEY"
+
+# Valid issue type names for JIRA_ISSUE_TYPE
+curl -s -H "Authorization: Basic $PAIR" \
+  "$JIRA_URL/rest/api/3/issue/createmeta?projectKeys=$JIRA_PROJECT_KEY&expand=projects.issuetypes"
+```
+
 Closing an issue depends on the workflow transition configured in the Jira project.
 
 Review:
@@ -688,6 +716,15 @@ Review:
 ```text
 JIRA_CLOSE_TRANSITION
 ```
+
+The adapter resolves this **by name** against the issue's available transitions
+and fails loudly listing what it found, so a wrong name is self-diagnosing.
+
+> **Clears can legitimately find nothing.** The close path searches for the open
+> issue via `POST /rest/api/3/search/jql`, which has **no read-after-write
+> consistency** — a clear fired seconds after its raise may log
+> `no open Jira issue for <label>; nothing to close`. Space raise/clear apart
+> when testing.
 
 ## BMC Helix
 
@@ -718,6 +755,95 @@ Validate:
 - `cmdb_ci` mapping
 - state/resolution values
 - permissions to search and update the correlated incident
+
+---
+
+# TLS interception (corporate proxy)
+
+Every adapter talks to its target with `httpx`, which verifies TLS against the
+**`certifi`** bundle of public roots — *not* the host OS trust store. On a
+network that inspects TLS (most corporate proxies), the proxy re-signs the
+connection with an internal CA that `certifi` doesn't know, and delivery fails:
+
+```text
+forward to jira FAILED: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify
+failed: unable to get local issuer certificate (_ssl.c:1010)
+```
+
+The tell is that a **browser on the same machine reaches the target fine** — the
+OS trusts the internal CA, the container doesn't. Interception is usually
+**selective by destination**, so unrelated traffic (e.g. the shim's Service Bus /
+SQS connection) keeps working while one adapter fails; expect the same error to
+appear on each *new* target you add, so treat this as deployment configuration,
+not a per-adapter workaround.
+
+**Fix: mount a CA bundle and point `SSL_CERT_FILE` at it.** No code change is
+needed — `httpx` honours `SSL_CERT_FILE` / `SSL_CERT_DIR` because the clients are
+built with the default `trust_env=True`.
+
+The bundle must contain the internal CA **plus** the public roots. `SSL_CERT_FILE`
+*replaces* the trust store rather than adding to it, so a file holding only the
+corporate CA breaks every other target.
+
+Build one on Windows (exports the machine's trust store, appends `certifi`):
+
+```powershell
+$Bundle = Join-Path $env:USERPROFILE ".com-event\corp-ca-bundle.pem"
+New-Item -ItemType Directory -Force -Path (Split-Path $Bundle) | Out-Null
+$seen = @{}; $sb = [Text.StringBuilder]::new()
+foreach ($s in @("Cert:\LocalMachine\Root","Cert:\CurrentUser\Root",
+                 "Cert:\LocalMachine\CA","Cert:\CurrentUser\CA")) {
+  foreach ($c in (Get-ChildItem $s -ErrorAction SilentlyContinue)) {
+    if ($seen.ContainsKey($c.Thumbprint)) { continue }
+    $seen[$c.Thumbprint] = $true
+    [void]$sb.AppendLine("-----BEGIN CERTIFICATE-----")
+    [void]$sb.AppendLine([Convert]::ToBase64String($c.RawData,'InsertLineBreaks').Trim())
+    [void]$sb.AppendLine("-----END CERTIFICATE-----")
+  }
+}
+$certifi = (python -c "import certifi;print(certifi.where())").Trim()
+[IO.File]::WriteAllText($Bundle, (($sb.ToString() + (Get-Content $certifi -Raw)) -replace "`r`n","`n"))
+```
+
+On Linux the distro bundle already includes a CA installed via
+`update-ca-certificates`, so use `/etc/ssl/certs/ca-certificates.pem` (Debian/
+Ubuntu) or `/etc/pki/tls/certs/ca-bundle.crt` (RHEL) directly.
+
+Verify the bundle **against the real target** before deploying — this proves both
+that the file parses and that it satisfies the proxy's chain:
+
+```powershell
+$env:SSL_CERT_FILE = $Bundle
+python -c "import httpx; print(httpx.get('https://acme.atlassian.net/rest/api/3/serverInfo').status_code)"
+```
+
+Then mount it into the container (shim or bridge):
+
+```powershell
+docker run -d --name com-event-shim --restart unless-stopped `
+  -v "$env:USERPROFILE\.com-event\corp-ca-bundle.pem:/etc/ssl/certs/corp-ca.pem:ro" `
+  -e SSL_CERT_FILE=/etc/ssl/certs/corp-ca.pem `
+  ghcr.io/jullienl/com-event-shim:latest
+```
+
+Compose (bridge):
+
+```yaml
+services:
+  bridge:
+    environment:
+      SSL_CERT_FILE: /etc/ssl/certs/corp-ca.pem
+    volumes:
+      - ./corp-ca-bundle.pem:/etc/ssl/certs/corp-ca.pem:ro
+```
+
+On Kubernetes put the bundle in a `ConfigMap`, mount it, and set `SSL_CERT_FILE`
+to the mounted path.
+
+> **Don't disable verification.** There is deliberately no "skip TLS verify"
+> switch: events carry infrastructure detail and adapter requests carry
+> credentials, so an unverified connection is a real exposure. Add the CA
+> instead.
 
 ---
 
