@@ -114,19 +114,27 @@ class JiraAdapter(TargetAdapter):
         r.raise_for_status()
 
     def _close(self, client: httpx.Client, e: CanonicalEvent) -> None:
-        """Find open issue(s) with this correlation label and transition to done."""
+        """Find open issue(s) with this correlation label and transition to done.
+
+        Uses Jira's *enhanced search* endpoint ``/rest/api/3/search/jql``. The
+        old ``/rest/api/3/search`` was removed by Atlassian after 2025-05-01 and
+        now answers ``410 Gone``. Two constraints come with the replacement: the
+        JQL must stay **bounded** (the ``project`` clause does that) or it
+        returns 400, and issues come back with ``id`` — ``key`` is not
+        guaranteed, so fall back to the id (transitions accept either).
+        """
         label = self._corr_label(e)
         jql = (
             f'project = "{self._project}" AND labels = "{label}" '
             f"AND statusCategory != Done"
         )
         r = client.post(
-            f"{self._api}/rest/api/3/search",
-            json={"jql": jql, "fields": ["key"], "maxResults": 50},
+            f"{self._api}/rest/api/3/search/jql",
+            json={"jql": jql, "maxResults": 50},
             headers=self._headers,
         )
         r.raise_for_status()
-        keys = [it["key"] for it in r.json().get("issues", [])]
+        keys = [it.get("key") or it["id"] for it in r.json().get("issues", [])]
         if not keys:
             log.info("no open Jira issue for %s; nothing to close", label)
             return
