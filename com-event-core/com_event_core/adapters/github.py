@@ -30,6 +30,7 @@ import os
 
 import httpx
 
+from com_event_core.enrich.render import HEADING, has_analysis
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -74,6 +75,24 @@ class GitHubAdapter(TargetAdapter):
             lines += ["", e.description]
         if e.resolution:
             lines += ["", f"**Suggested resolution:** {e.resolution}"]
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        # Built as its own bold-labelled, blank-line-separated paragraphs — not
+        # the flattened analysis_lines() text — so summary / root cause /
+        # confidence / actions read as distinct sections in rendered Markdown.
+        if has_analysis(e):
+            lines += ["", f"### {HEADING}", ""]
+            if e.analysis_summary:
+                lines += [e.analysis_summary, ""]
+            meta = []
+            if e.analysis_root_cause:
+                meta.append(f"**Likely root cause:** {e.analysis_root_cause}")
+            if e.analysis_confidence is not None:
+                meta.append(f"**Confidence:** {e.analysis_confidence:.0%}")
+            if meta:
+                lines += [*meta, ""]
+            if e.analysis_actions:
+                lines.append("**Recommended actions:**")
+                lines += [f"{i}. {a}" for i, a in enumerate(e.analysis_actions, 1)]
         # Hidden marker so the correlation is auditable in the issue body.
         lines += ["", f"<!-- {_MARKER} {e.correlation_key or e.dedup_key} -->"]
         return "\n".join(lines)

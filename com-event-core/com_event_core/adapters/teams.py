@@ -77,6 +77,7 @@ import os
 
 import httpx
 
+from com_event_core.enrich.render import HEADING, has_analysis
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -127,6 +128,29 @@ class TeamsAdapter(TargetAdapter):
         if e.resolution:
             body.append({"type": "TextBlock", "wrap": True, "isSubtle": True,
                          "text": f"Suggested resolution: {e.resolution}"})
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        # Split into its own TextBlocks + a FactSet — not one newline-joined
+        # TextBlock — so summary / root cause / confidence / actions read as
+        # distinct sections, matching the main facts block's layout above.
+        if has_analysis(e):
+            body.append({"type": "TextBlock", "weight": "Bolder", "wrap": True,
+                         "text": HEADING, "spacing": "Large"})
+            if e.analysis_summary:
+                body.append({"type": "TextBlock", "wrap": True, "text": e.analysis_summary})
+            meta_facts = []
+            if e.analysis_root_cause:
+                meta_facts.append({"title": "Likely root cause", "value": e.analysis_root_cause})
+            if e.analysis_confidence is not None:
+                meta_facts.append({"title": "Confidence", "value": f"{e.analysis_confidence:.0%}"})
+            if meta_facts:
+                body.append({"type": "FactSet", "facts": meta_facts})
+            if e.analysis_actions:
+                body.append({"type": "TextBlock", "weight": "Bolder", "wrap": True,
+                             "text": "Recommended actions:"})
+                actions_text = "\n".join(
+                    f"{i}. {a}" for i, a in enumerate(e.analysis_actions, 1)
+                )
+                body.append({"type": "TextBlock", "wrap": True, "text": actions_text})
 
         card: dict = {
             "type": "AdaptiveCard",

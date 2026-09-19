@@ -38,6 +38,7 @@ import re
 
 import httpx
 
+from com_event_core.enrich.render import HEADING, has_analysis
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -46,6 +47,43 @@ log = logging.getLogger("com_event_core.adapter.jira")
 
 # Jira labels may not contain whitespace; normalise everything else to '_'.
 _LABEL_SANITISE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _adf_para(text: str, *, bold_prefix: str | None = None, bold: bool = False) -> dict:
+    """One ADF paragraph node, optionally with a bold leading label or fully bold.
+
+    ADF text nodes do NOT render a literal ``\\n`` as a line break — only
+    separate block nodes (paragraphs, headings, lists) create visual
+    separation in the Jira UI. Every distinct line of the description must be
+    its own node, not a single text blob joined with newlines.
+    """
+    content = []
+    if bold_prefix:
+        content.append({"type": "text", "text": bold_prefix, "marks": [{"type": "strong"}]})
+    marks = [{"type": "strong"}] if bold else None
+    node = {"type": "text", "text": text}
+    if marks:
+        node["marks"] = marks
+    content.append(node)
+    return {"type": "paragraph", "content": content}
+
+
+def _adf_heading(text: str, level: int = 3) -> dict:
+    return {
+        "type": "heading",
+        "attrs": {"level": level},
+        "content": [{"type": "text", "text": text}],
+    }
+
+
+def _adf_ordered_list(items: list[str]) -> dict:
+    return {
+        "type": "orderedList",
+        "attrs": {"order": 1},
+        "content": [
+            {"type": "listItem", "content": [_adf_para(item)]} for item in items
+        ],
+    }
 
 
 def _check(r: httpx.Response, what: str) -> None:
@@ -93,28 +131,43 @@ class JiraAdapter(TargetAdapter):
         return "com-" + _LABEL_SANITISE.sub("_", key)
 
     def _adf(self, e: CanonicalEvent) -> dict:
-        """Build an Atlassian Document Format body (required by REST v3)."""
-        lines = [
-            f"COM operation {e.operation} on {e.resource_serial or 'unknown'} "
-            f"({e.resource_model or 'unknown model'}).",
-            f"Event id: {e.event_id}",
-            f"Severity: {e.severity}",
-            f"Time: {e.time_created or 'n/a'}",
+        """Build an Atlassian Document Format body (required by REST v3).
+
+        Each logical line is its own ADF block node (paragraph/heading/list) —
+        never one text node joined with ``\\n`` — since ADF does not render
+        literal newlines as line breaks; without this, the whole description
+        (and the AI analysis) renders as one run-together paragraph.
+        """
+        content: list[dict] = [
+            _adf_para(
+                f"COM operation {e.operation} on {e.resource_serial or 'unknown'} "
+                f"({e.resource_model or 'unknown model'})."
+            ),
+            _adf_para(f"Event id: {e.event_id}"),
+            _adf_para(f"Severity: {e.severity}"),
+            _adf_para(f"Time: {e.time_created or 'n/a'}"),
         ]
         if e.mgmt_url:
-            lines.append(f"Management URL: {e.mgmt_url}")
+            content.append(_adf_para(f"Management URL: {e.mgmt_url}"))
         if e.description:
-            lines.append(e.description)
+            content.append(_adf_para(e.description))
         if e.resolution:
-            lines.append(f"Suggested resolution: {e.resolution}")
-        text = "\n".join(lines)
-        return {
-            "type": "doc",
-            "version": 1,
-            "content": [
-                {"type": "paragraph", "content": [{"type": "text", "text": text}]}
-            ],
-        }
+            content.append(_adf_para(e.resolution, bold_prefix="Suggested resolution: "))
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        if has_analysis(e):
+            content.append(_adf_heading(HEADING))
+            if e.analysis_summary:
+                content.append(_adf_para(e.analysis_summary))
+            if e.analysis_root_cause:
+                content.append(_adf_para(e.analysis_root_cause, bold_prefix="Likely root cause: "))
+            if e.analysis_confidence is not None:
+                content.append(
+                    _adf_para(f"{e.analysis_confidence:.0%}", bold_prefix="Confidence: ")
+                )
+            if e.analysis_actions:
+                content.append(_adf_para("Recommended actions:", bold=True))
+                content.append(_adf_ordered_list(e.analysis_actions))
+        return {"type": "doc", "version": 1, "content": content}
 
     def forward(self, event: CanonicalEvent) -> None:
         with httpx.Client(timeout=self._timeout, auth=self._auth) as client:

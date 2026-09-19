@@ -114,6 +114,40 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   collide. Needs per-instance config namespacing (labelled targets); tracked in
   the root README roadmap.
 
+## AI analysis rendering — pick strategy by target schema, not uniformly (critical)
+
+- **`analysis_summary`/`analysis_root_cause`/`analysis_confidence`/`analysis_actions`
+  on `CanonicalEvent` are optional (`None`/`[]` unless an enricher ran) — every
+  adapter that surfaces them must no-op cleanly when absent.** Never raise or
+  emit an empty section on a clear/unenriched event.
+- **Three render strategies, chosen by what the target actually accepts — never
+  copy one adapter's approach to another without checking the target's schema:**
+  1. **Rich-markup targets** (Slack Block Kit, Teams Adaptive Card, Jira ADF,
+     GitHub Markdown) — build bespoke structured blocks directly from the four
+     raw fields (separate sections/blocks, not one joined string).
+  2. **Free-text targets** (Halo, OBM, ServiceNow, BMC Helix, Datadog `text`,
+     OpsRamp `description`) — append `analysis_text(e)` from
+     `com_event_core.enrich.render` (heading-prefixed, blank-line-paragraph
+     block, `""` when no analysis) to the existing description/details string.
+  3. **Structured JSON-record targets** (Elastic, Grafana, PagerDuty, Splunk) —
+     add the four raw fields as new dict keys directly, same as other
+     `CanonicalEvent` passthrough fields already on that record.
+- **A target with flat-scalar-only columns needs the list field flattened —
+  check for a pre-existing sign the adapter already avoids nested types.**
+  Sentinel's Log Analytics Data Collector API only accepts flat scalar columns
+  per record; the `_to_record()` adapter already omits the `tags` dict for
+  exactly this reason. So `analysis_actions` (a list) is joined into one
+  semicolon-separated numbered string there instead of sent as an array, while
+  the other three fields stay scalar. Dynatrace's flat `com.*` properties get
+  the same treatment (confidence formatted `.2f`, actions joined `" | "`).
+  Splunk's HEC event, by contrast, already nests `tags` as a dict — proof it
+  accepts nested JSON fine — so it gets `analysis_actions` as a raw list.
+- General rule: before wiring a new optional field into N adapters, group them
+  by what their target API actually accepts (free text vs. structured JSON vs.
+  flat-scalar-only) and grep each adapter's existing code for a tell (an
+  omitted dict field, a joined string) that reveals the target's real
+  constraint — don't assume a JSON-looking target accepts arbitrary nesting.
+
 ## Target-API drift + adapter validation (critical)
 
 - **A validated RAISE path proves NOTHING about the CLEAR path — they call
@@ -216,6 +250,22 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   `ssl.create_default_context(cafile=...)` loading N certs only proves the file
   is well-formed; `httpx.get("https://<target>/...")` returning `200` under
   `SSL_CERT_FILE` proves the chain actually satisfies the proxy.
+- **A process that embeds a NATIVE/Node runtime needs its OWN CA var, and its
+  failure mode looks like an auth error, not a TLS error.** The `ai-gateway`'s
+  Copilot provider loads a Node-based SDK addon alongside the Python process;
+  `SSL_CERT_FILE` fixes Python/httpx's outbound calls but the Node runtime
+  needs `NODE_EXTRA_CA_CERTS` pointed at the same merged bundle. Missing it
+  surfaced as a generic `Authorization error. Your credentials may be expired
+  or invalid.`, indistinguishable from a genuinely bad/unlicensed PAT, so a
+  real TLS gap can burn a debugging session chasing the wrong credential. Set
+  both vars together whenever a component mixes runtimes.
+- **Don't trust an undocumented "is this token valid" probe over the real call
+  path.** `GET https://api.github.com/copilot_internal/v2/token` returned `404`
+  for a PAT independently proven to work (byte-identical to a Key Vault secret
+  used by a live deployment). It's an internal, unstable endpoint; the only
+  authoritative check for Copilot access is the actual SDK/gateway call. When
+  a quick side-channel probe disagrees with the real integration path, trust
+  the real path.
 
 ## Server snapshots + multi-condition monitoring (critical)
 
@@ -263,6 +313,28 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   (and treat "always provided" claims as a hypothesis to verify in code); when
   it can legitimately be absent, the consumer must **skip and log**, never raise
   — raising on a structurally-missing field turns it into endless redelivery.
+- **`_normalize_server()`'s `mgmt_url` is HARDCODED `https://<bmc.ip>` with no
+  port and no override** — so any Redfish target it points at (the iLO emulator
+  included) MUST actually serve HTTPS on 443, or `ilo_ai`'s `RedfishClient` gets
+  `Connection refused`/`wrong version number`. The `ilo-emulator` image bakes
+  `ENV HTTPS=Disable`+`PORT=8000` (matching the Azure HOL lab's plain-HTTP
+  simplification), so testing the REAL enrichment path requires overriding both
+  (`-e HTTPS=Enable -e PORT=443`) — don't copy the lab's plain-HTTP run command
+  when the goal is exercising `ilo_ai`, and set `ILO_INSECURE=1` (the emulator's
+  self-signed cert has no `basicConstraints: CA:TRUE`, so `ILO_CA_BUNDLE` can't
+  work against it).
+- **To test the bridge + `ilo_ai` + ai-gateway pipeline locally end to end**:
+  one Docker network; build the bridge image from the monorepo ROOT (context
+  must include sibling `com-event-core`); run `ilo-emulator` (HTTPS/443 per
+  above), `ai-gateway` (working Copilot PAT + CA bundle), a webhook echo target,
+  and the bridge (`DELIVERY_MODE=spool`, `ENRICHERS=ilo_ai`, `ILO_INSECURE=1`).
+  POST a flat `_normalize_server()`-shaped payload (no COM-API envelope — see
+  that function for the exact field paths) to `/com/webhook` with the
+  `x-shim-secret` header; a raise drives real Redfish reads + a real
+  `POST .../agent/com-rca` before delivery, while a clear delivers in under a
+  second with `analysis_*` all null/empty (`IloAiEnricher.wants()` gates on
+  `action=RAISE`). Full recipe and verified payload shape in
+  `/memories/repo/ai-gateway-copilot-auth.md`.
 
 ## Runbook curl bodies + invalid-JSON dead-letter (docs)
 
@@ -1154,63 +1226,20 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   nothing: a renamed protected resource must fail loudly rather than silently
   become unprotected.
 
-## Copilot AI Gateway multi-tenancy (critical)
+## AI Gateway (moved to its own repo)
 
-- **One image, two modes — token resolution is per-request, not per-process.**
-  `copilot-ai-gateway` serves personal use (no `tenant` → single
-  `COPILOT_GITHUB_TOKEN`) AND a multi-bot HOL (each request's `tenant` → that
-  station's own bot PAT) from the SAME build. Resolve the PAT inside `_run` via
-  `_resolve_token(tenant)` and pass it as `create_session(github_token=...)` —
-  the SDK accepts a **per-session** token, so don't bind one token at client
-  start.
-- **`session_id` and bot identity are ORTHOGONAL.** `session_id` only threads a
-  conversation; it does NOT isolate quota/rate-limit/attribution. N users need N
-  bot accounts, not one PAT + N session_ids. Never conflate "resume a
-  conversation" with "separate identity/quota".
-- **A persistent Copilot session is tied to the bot that created it →
-  namespace `session_id` per tenant** (`f"{tenant}:{session_id}"`) so two tenants
-  reusing the same simple id (`"incident1"`) can't collide. Because tenant→bot is
-  stable, the namespaced id always resolves to the same bot. **But the runtime
-  accepts ONLY a UUID as `sessionId`** — it rejects anything else at
-  `session.create` with `JsonRpcError -32603 ... Rejected session.create request
-  with invalid sessionId: <your id>` (n8n shows it as *Bad gateway*). The SDK
-  hides this because it defaults to `str(uuid.uuid4())` when you pass none, so it
-  only bites once you supply your own. Hash the namespaced key through a fixed
-  `uuid.uuid5(_SESSION_NAMESPACE, key)` — deterministic, so resume still works —
-  and never change the namespace constant or every stored conversation is
-  orphaned. General rule: an id you invent and hand to an external runtime must
-  be validated against that runtime's format, and the fact that the SDK
-  *generates* one for you is the hint about which format it wants.
-- **Per-tenant secrets are file-first, same principle as `get_secret`.** Read a
-  tenant PAT from `COPILOT_TENANT_TOKENS_DIR/<tenant>` (one file per bot; maps to
-  a secret volume / Key Vault CSI) or a `COPILOT_TENANT_TOKENS_FILE` JSON map —
-  never a per-tenant plain env var.
-- **Validate any id that becomes a filesystem path or secret name.** Tenant ids
-  are `[A-Za-z0-9_-]` only (path-traversal guard → `ValueError`→400); unknown
-  tenant → `KeyError`→404. For the ACA deploy, tenant ids also become **ACA secret
-  names**, so they must be lowercase `[a-z0-9-]` (e.g. `s01`).
-- **Guard the unsafe fallback with a flag, don't rely on omission.**
-  `COPILOT_REQUIRE_TENANT=1` rejects tenant-less requests (400) so an HOL
-  deployment can't silently fall back to the personal token. The Azure deploy
-  script sets this automatically whenever `TENANTS_FILE` is used.
-- **Per-session identity isolation is VERIFIED, not assumed.** With two real bot
-  PATs, both sessions ran concurrently under their own bot while a **garbage**
-  per-session `github_token` was **rejected** (`401 Bad credentials` at
-  `session.create`) even though the runtime's global CLI login was a *different*
-  authenticated account — i.e. a bad per-session token does NOT fall back to the
-  runtime global login. There is **no per-session whoami**
-  (`CopilotClient.get_auth_status()` is client-level; `CopilotSession` has none),
-  so prove isolation with the **garbage-token-rejected** test, not an identity
-  accessor.
-- **A CLIENT-level SDK call has NO identity in a per-session deployment — it
-  fails at runtime, as a 500.** `list_models()` / `get_auth_status()` take no
-  token and run under the runtime's **global** login; tenant-only mode sets no
-  `COPILOT_GITHUB_TOKEN`, so `GET /models` dies with `JsonRpcError -32603 ...
-  Not authenticated. Please authenticate first.` while `/chat` and `/agent/*`
-  (per-session token) work fine. It also works on a dev box — the local `gh`
-  login *is* the global identity — so it only breaks in the container. Rule:
-  when an endpoint wraps a client-level call, decide per deployment mode whether
-  to expose it, catch the auth error and return an explaining **501** rather
-  than a stack-trace 500, and say so in the endpoint table. General rule: check
-  each SDK method's signature for a token parameter — no token parameter means
-  it inherits process-global auth, which a multi-tenant service does not have.
+The Copilot/OpenAI/Anthropic analyzer service formerly at `copilot-ai-gateway/`
+in this repo has moved to a standalone, domain-neutral repo:
+[jullienl/ai-gateway](https://github.com/jullienl/ai-gateway) — it has no
+dependency on `com_event_core` or anything else here, only the small HTTP
+"analyzer contract" documented in
+[com-event-core/README.md](../com-event-core/README.md#the-analyzer-contract).
+
+Its own `GUIDE.md` carries the detailed multi-tenancy/provider architecture
+notes (per-request token resolution, `session_id` UUIDv5 hashing, per-tenant
+secret files, the client-level-vs-per-session auth distinction, etc.) — do not
+re-duplicate them here; update that repo's docs instead. This repo only needs
+to know: it is one implementation of the analyzer contract, referenced from
+[README.md](../README.md) and [com-event-core/README.md](../com-event-core/README.md),
+and any other service implementing that same contract works as a drop-in
+replacement.

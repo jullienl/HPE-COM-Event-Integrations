@@ -98,6 +98,20 @@ class CanonicalEvent:
     #: Coarse classification (e.g. 'hardware', 'Operational').
     category: str | None = None
 
+    # --- AI analysis (filled by an optional enrichment stage) ------------
+    # Populated between normalize() and deliver_events() when ENRICHERS selects
+    # an enricher (see com_event_core.enrich). They stay None/empty when
+    # enrichment is disabled, skipped, or failed — enrichment is fail-open, so
+    # every adapter must treat these as optional.
+    #: One-paragraph incident summary produced by the analyzer.
+    analysis_summary: str | None = None
+    #: The analyzer's most probable root cause.
+    analysis_root_cause: str | None = None
+    #: Analyzer confidence, 0.0-1.0.
+    analysis_confidence: float | None = None
+    #: Ordered, concrete remediation steps.
+    analysis_actions: list[str] = field(default_factory=list)
+
 
 # Values in a server health block that are NOT problems (so we can list the
 # genuinely unhealthy subsystems in the description).

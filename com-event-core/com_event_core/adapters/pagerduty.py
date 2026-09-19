@@ -74,6 +74,15 @@ class PagerDutyAdapter(TargetAdapter):
                 custom["description"] = e.description
             if e.resolution:
                 custom["resolution"] = e.resolution
+            # Optional AI analysis (empty unless an enricher ran successfully).
+            if e.analysis_summary:
+                custom["analysis_summary"] = e.analysis_summary
+            if e.analysis_root_cause:
+                custom["analysis_root_cause"] = e.analysis_root_cause
+            if e.analysis_confidence is not None:
+                custom["analysis_confidence"] = e.analysis_confidence
+            if e.analysis_actions:
+                custom["analysis_actions"] = e.analysis_actions
             payload["payload"] = {
                 "summary": e.title,
                 "source": e.resource_serial or self._source,

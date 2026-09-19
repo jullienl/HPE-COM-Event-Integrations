@@ -12,6 +12,9 @@ duplicated between `com-event-relay` (the cloud relay + on-prem shim) and
                  via `get_adapters()`.
 - `deliver`    — fan-out helper that delivers one event to one or many adapters
                  with per-adapter de-dup and partial-failure retry.
+- `enrich`     — optional analysis stage that runs *between* normalize and
+                 deliver (selected by `ENRICHERS`, default none), mutating the
+                 event so every adapter renders the enriched version.
 - `secrets`    — `get_secret()`: resolve sensitive values from a file
                  (`<name>_FILE`, e.g. a vault/CSI/Docker-projected secret) or the
                  environment, so credentials can stay out of `.env`.
@@ -24,6 +27,7 @@ from .normalize import CanonicalEvent, normalize, ACTION_RAISE, ACTION_CLEAR
 from .dedup import DedupStore
 from .adapters import get_adapters, TargetAdapter
 from .deliver import deliver, deliver_events, PartialDeliveryError
+from .enrich import Enricher, enrich_events, get_enrichers
 from .secrets import get_secret
 
 __all__ = [
@@ -37,6 +41,9 @@ __all__ = [
     "deliver",
     "deliver_events",
     "PartialDeliveryError",
+    "Enricher",
+    "enrich_events",
+    "get_enrichers",
     "get_secret",
 ]
 

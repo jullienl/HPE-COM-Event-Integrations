@@ -88,6 +88,11 @@ class GrafanaAdapter(TargetAdapter):
                 "resolution": e.resolution,
                 "category": e.category,
                 "tags": e.tags,
+                # Optional AI analysis (empty/None unless an enricher ran successfully).
+                "analysis_summary": e.analysis_summary,
+                "analysis_root_cause": e.analysis_root_cause,
+                "analysis_confidence": e.analysis_confidence,
+                "analysis_actions": e.analysis_actions,
             },
             default=str,
         )

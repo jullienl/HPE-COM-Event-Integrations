@@ -11,6 +11,7 @@ import os
 
 import httpx
 
+from com_event_core.enrich.render import analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -39,6 +40,11 @@ class ObmAdapter(TargetAdapter):
         # On a clear (recovery), send a normal-severity, closed event carrying the
         # SAME key as the original so OBM correlates and auto-closes it.
         is_clear = e.action == ACTION_CLEAR
+        description = e.description or ""
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        analysis = analysis_text(e)
+        if analysis:
+            description = f"{description}\n\n{analysis}" if description else analysis
         return {
             "title": e.title,
             "severity": "normal" if is_clear else _SEVERITY.get(e.severity, "warning"),
@@ -47,7 +53,7 @@ class ObmAdapter(TargetAdapter):
             "node": e.resource_model,
             "mgmt_url": e.mgmt_url,
             "time_created": e.time_created,
-            "description": e.description or "",
+            "description": description,
             "custom_attrs": ";".join(f"{k}={v}" for k, v in e.tags.items()),
             # Stable per-problem key so the raise and its later clear line up.
             "dedup_key": e.correlation_key or e.dedup_key,

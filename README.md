@@ -2,11 +2,13 @@
 
 Securely integrate **HPE Compute Ops Management (COM)** webhook events with **ITSM, ITOM, SIEM, SOAR, ChatOps, incident-response, and observability platforms** such as **HaloITSM**, **Jira Service Management, Splunk, Microsoft Sentinel, OBM, DataDog, Microsoft Teams, Slack, or any webhook-compatible target**.
 
-The framework provides webhook validation, authentication, payload normalization, de-duplication, reliable delivery, raise/clear event correlation, and multiple deployment options — including an architecture that requires **no inbound network ports to be opened**.
+The framework provides webhook validation, authentication, payload normalization, de-duplication, reliable delivery, raise/clear event correlation, and multiple deployment options, including an architecture that requires **no inbound network ports to be opened**.
 
-The framework uses a shared `CanonicalEvent` model and a **rich, growing library of pluggable target adapters** — small, reusable components that translate normalized COM events into the API or webhook format expected by each destination. A single COM event can be **delivered simultaneously to multiple targets**, allowing the same event to trigger different workflows across ITSM, SIEM, monitoring, and collaboration platforms. COM-specific processing is implemented only once, while the same normalization, correlation, retry, and delivery logic is reused across all configured destinations. **New adapters can typically be added in minutes rather than days, with only a small amount of target-specific code.**
+The framework uses a shared `CanonicalEvent` model and a **rich, growing library of pluggable target adapters**: small, reusable components that translate normalized COM events into the API or webhook format expected by each destination. A single COM event can be **delivered simultaneously to multiple targets**, allowing the same event to trigger different workflows across ITSM, SIEM, monitoring, and collaboration platforms. COM-specific processing is implemented only once, while the same normalization, correlation, retry, and delivery logic is reused across all configured destinations. **New adapters can typically be added in minutes rather than days, with only a small amount of target-specific code.**
 
-It ships as **ready-to-run, multi-architecture container images** published to **GitHub Container Registry (GHCR)** and configured entirely through environment variables and secrets — deploy quickly by passing your own parameters, with no code changes and nothing to build first.
+It also brings **AI-assisted incident investigation and remediation** to those deliveries: an optional stage where an AI agent analyzes the collected hardware evidence for a COM event and produces a structured incident report, observed facts kept separate from hypothesis, a likely root cause, a confidence assessment, and recommended diagnostic and remediation steps, attached to the ticket or chat message **before it is even created**. This turns event-driven operations from "a server is unhealthy" into "here's what's likely wrong, how sure we are, and what to do next." See [AI-assisted incident investigation and remediation](#ai-assisted-incident-investigation-and-remediation).
+
+It ships as **ready-to-run, multi-architecture container images** published to **GitHub Container Registry (GHCR)** and configured entirely through environment variables and secrets: deploy quickly by passing your own parameters, with no code changes and nothing to build first.
 
 
 > **Reference implementation**
@@ -22,8 +24,8 @@ It ships as **ready-to-run, multi-architecture container images** published to *
 
 Two deployment models are available:
 
-- **Relay + Shim** — use a managed public cloud edge and keep the customer network outbound-only.
-- **Bridge** — run a single all-in-one receiver when you can expose an HTTPS endpoint that COM can reach.
+- **Relay + Shim**: use a managed public cloud edge and keep the customer network outbound-only.
+- **Bridge**: run a single all-in-one receiver when you can expose an HTTPS endpoint that COM can reach.
 
 Both models share the same normalisation, de-duplication, correlation, and target-adapter logic from `com-event-core`.
 
@@ -39,6 +41,7 @@ Both models share the same normalisation, de-duplication, correlation, and targe
 - [Deployment models](#deployment-models)
 - [Which deployment should I choose?](#which-deployment-should-i-choose)
 - [Supported integrations](#supported-integrations)
+- [AI-assisted incident investigation and remediation](#ai-assisted-incident-investigation-and-remediation)
 - [When should I use a native COM integration?](#when-should-i-use-a-native-com-integration)
 - [COM event lifecycle](#com-event-lifecycle)
 - [Projects in this repository](#projects-in-this-repository)
@@ -130,15 +133,15 @@ A single COM event can be delivered independently to several different target ad
 
 ## Ready-to-deploy containerized solution
 
-The Relay, Shim, and Bridge are packaged as ready-to-run container images, so deployment is quick and consistent across environments. All settings are supplied through configuration — the same images run everywhere without code changes.
+The Relay, Shim, and Bridge are packaged as ready-to-run container images, so deployment is quick and consistent across environments. All settings are supplied through configuration: the same images run everywhere without code changes.
 
-- **Fast deployment** — prebuilt images start with a single run command; nothing to compile or package first.
-- **Consistent runtime** — the same image behaves identically across development, test, and production.
-- **Minimal host dependencies** — no language runtime or libraries to install on the host; only a container engine is required.
-- **Simple upgrades** — move to a new version by pulling an updated image tag.
-- **Easy rollback** — return to a previous version by redeploying an earlier image tag.
-- **Portable deployment** — the same images run on-premises or on supported cloud platforms; only the supplied configuration changes.
-- **Automation-friendly** — configuration through environment variables and secrets fits naturally into CI/CD and infrastructure-as-code workflows.
+- **Fast deployment**: prebuilt images start with a single run command; nothing to compile or package first.
+- **Consistent runtime**: the same image behaves identically across development, test, and production.
+- **Minimal host dependencies**: no language runtime or libraries to install on the host; only a container engine is required.
+- **Simple upgrades**: move to a new version by pulling an updated image tag.
+- **Easy rollback**: return to a previous version by redeploying an earlier image tag.
+- **Portable deployment**: the same images run on-premises or on supported cloud platforms; only the supplied configuration changes.
+- **Automation-friendly**: configuration through environment variables and secrets fits naturally into CI/CD and infrastructure-as-code workflows.
 
 All deployment-specific behavior is supplied through configuration, including:
 
@@ -185,7 +188,7 @@ This keeps the COM contract, de-duplication, correlation, and delivery behavior 
 - Post operational notifications to a ChatOps channel such as Microsoft Teams or Slack.
 - Integrate COM with a platform that does not natively understand the COM webhook contract.
 - Deliver COM events to an internal application **without opening inbound firewall ports**.
-- Fan one COM event stream out to several operational systems at once — for example, open a ServiceNow incident, feed the same event to Splunk for audit, and post a Slack notification to the operations channel.
+- Fan one COM event stream out to several operational systems at once, for example, open a ServiceNow incident, feed the same event to Splunk for audit, and post a Slack notification to the operations channel.
 - Insert custom transformation, filtering, authentication, or enrichment between COM and the target.
 
 ---
@@ -340,17 +343,17 @@ This means there is **no inbound connection from COM into the customer network**
 
 # Supported integrations
 
-This project ships with a rich set of built-in target adapters spanning **ITSM**, **ITOM / AIOps**, **SIEM**, **observability / monitoring**, and **incident-response / ChatOps**, plus a **generic webhook** — so a single COM event stream can drive service-management, operations, security, and collaboration platforms at the same time.
+This project ships with a rich set of built-in target adapters spanning **ITSM**, **ITOM / AIOps**, **SIEM**, **observability / monitoring**, and **incident-response / ChatOps**, plus a **generic webhook**, so a single COM event stream can drive service-management, operations, security, and collaboration platforms at the same time.
 
 ## Where the adapters live
 
-All target adapters are implemented once in [`com-event-core`](com-event-core/) and reused by both deployment models — `com-event-relay` and `com-event-bridge` — so a fix or new mapping is inherited by both.
+All target adapters are implemented once in [`com-event-core`](com-event-core/) and reused by both deployment models, `com-event-relay` and `com-event-bridge`, so a fix or new mapping is inherited by both.
 
 ## Supported platforms
 
-For the full list of supported platforms and their per-adapter details — category, role, authentication, whether COM offers a native integration, how a clear is delivered, and validation status — see the [supported-adapters table in `com-event-core`](com-event-core/README.md#supported-adapters), the single source of truth.
+For the full list of supported platforms and their per-adapter details, category, role, authentication, whether COM offers a native integration, how a clear is delivered, and validation status, see the [supported-adapters table in `com-event-core`](com-event-core/README.md#supported-adapters), the single source of truth.
 
-> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending for most is **validation against a live product**: the **GitHub**, **Slack**, **Teams**, and **Jira** adapters have been exercised end-to-end against a real target so far (raise *and* clear); the others have not yet been tested against a live instance (standing up every one of these platforms in a lab isn't feasible, and several also require paid licenses). Validate each adapter against your own environment before production use.
+> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API: connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending for most is **validation against a live product**: the **GitHub**, **Slack**, **Teams**, and **Jira** adapters have been exercised end-to-end against a real target so far (raise *and* clear); the others have not yet been tested against a live instance (standing up every one of these platforms in a lab isn't feasible, and several also require paid licenses). Validate each adapter against your own environment before production use.
 >
 > 🙋 Contributions and live-tenant validation feedback are welcome. 
 
@@ -359,8 +362,8 @@ For the full list of supported platforms and their per-adapter details — categ
 
 **Target not listed?** You have two options:
 
-- **Use the generic `webhook` adapter** to POST the `CanonicalEvent` as JSON to any HTTP endpoint — no code required.
-- **Add your own adapter** if the target needs a specific API or payload shape — see [adding a new target](com-event-core/README.md#adding-a-new-target).
+- **Use the generic `webhook` adapter** to POST the `CanonicalEvent` as JSON to any HTTP endpoint, no code required.
+- **Add your own adapter** if the target needs a specific API or payload shape, see [adding a new target](com-event-core/README.md#adding-a-new-target).
 
 
 ## Selecting one or more targets
@@ -378,7 +381,7 @@ For example, to deliver events to Splunk, Microsoft Teams, and Jira Service Mana
 TARGETS=splunk,teams,jira
 ```
 
-Each adapter reads its own connection settings — URLs, credentials, tokens, and other target-specific parameters — from environment variables or mounted secret files. See [`com-event-core`](com-event-core/) and the individual project READMEs for configuration details.
+Each adapter reads its own connection settings, URLs, credentials, tokens, and other target-specific parameters, from environment variables or mounted secret files. See [`com-event-core`](com-event-core/) and the individual project READMEs for configuration details.
 
 ### Multi-target delivery behavior
 
@@ -392,7 +395,29 @@ If one target is temporarily unavailable:
 
 For reliable multi-target delivery, use the **Relay + Shim** queue or **Bridge spool mode**. Bridge `sync` mode is best-effort and does not provide durable retry.
 
-> **Current limitation:** Multiple instances of the same adapter type — for example, two generic webhook targets or two Slack destinations — are not yet supported because adapters currently use global environment-variable names. Per-instance adapter configuration is listed in the [Roadmap](#roadmap).
+> **Current limitation:** Multiple instances of the same adapter type, for example, two generic webhook targets or two Slack destinations, are not yet supported because adapters currently use global environment-variable names. Per-instance adapter configuration is listed in the [Roadmap](#roadmap).
+
+---
+
+# AI-assisted incident investigation and remediation
+
+Optional, **off by default**, and layered on top of every target adapter above: before an event is delivered, an AI agent can analyze the hardware evidence collected for it and produce a structured incident report that lands **inside** the ticket, issue, or chat message at creation, not bolted on afterward.
+
+The report keeps **observed facts**, the specific signals found in the data, separate from **hypothesis**: it proposes a likely root cause, assesses its own confidence in that cause, and recommends further diagnostic checks and concrete remediation actions, without presenting an unverified guess as a definitive conclusion. Intelligent, event-driven operations, not just event forwarding.
+
+A ready-to-run analyzer for it, the [AI Gateway](https://github.com/jullienl/ai-gateway) (a separate, standalone repo): it can run on **GitHub Copilot, OpenAI, or Anthropic**, picked per request, so it fits whichever of those you already have rather than requiring a new subscription. Any service that implements the same small HTTP contract works in its place, see [bring your own model](https://github.com/jullienl/ai-gateway#no-github-copilot-license-bring-your-own-model) for a minimal analyzer built on any other provider.
+
+→ **[AI analysis enrichment](com-event-core/README.md#ai-analysis-enrichment)** in `com-event-core` is the full write-up: enabling `ENRICHERS=ilo_ai`, running the gateway, the exact fields it returns, and what shows up in the ticket.
+
+<img src="docs/images/ai-assisted-investigation-diagram.png" alt="At glance architecture"  />
+
+### What it looks like
+
+Three raise events, each with a different injected hardware fault, delivered with their AI analysis attached at creation:
+
+| Slack — power fault | Teams — memory fault | Jira — cooling fault |
+|---|---|---|
+| <img src="docs/images/slack-power-AI-analysis.png" alt="Slack message with AI analysis for a power fault" width="280" /> | <img src="docs/images/teams-memory-AI-analysis.png" alt="Teams message with AI analysis for a memory fault" width="280" /> | <img src="docs/images/jira-cooling-AI-analysis.png" alt="Jira issue with AI analysis for a cooling fault" width="280" /> |
 
 ---
 
@@ -476,9 +501,9 @@ For the exact COM webhook filters and lifecycle examples, see the project docume
 
 # Projects in this repository
 
-- [`com-event-relay`](com-event-relay/) — cloud relay + outbound-only shim; use when the internal target must **not** be directly reachable from COM.
-- [`com-event-bridge`](com-event-bridge/) — single-box all-in-one receiver; use when you can host the public HTTPS endpoint yourself and want the smallest footprint.
-- [`com-event-core`](com-event-core/) — shared package (`CanonicalEvent`, normalisation, de-duplication, raise/clear correlation, all built-in adapters) used by both deployment models, so a fix or new mapping is made once and inherited by both.
+- [`com-event-relay`](com-event-relay/): cloud relay + outbound-only shim; use when the internal target must **not** be directly reachable from COM.
+- [`com-event-bridge`](com-event-bridge/): single-box all-in-one receiver; use when you can host the public HTTPS endpoint yourself and want the smallest footprint.
+- [`com-event-core`](com-event-core/): shared package (`CanonicalEvent`, normalisation, de-duplication, raise/clear correlation, all built-in adapters) used by both deployment models, so a fix or new mapping is made once and inherited by both.
 
 ---
 
@@ -502,25 +527,31 @@ The images are self-contained. Building from the repository root includes the lo
 
 Use the deployment runbooks for the fastest path from an empty environment to a working COM-to-target pipeline:
 
-- [`Azure end-to-end deployment`](com-event-relay/docs/Deploy-End-to-End-to-Azure.md) — Azure relay + on-prem shim
-- [`AWS end-to-end deployment`](com-event-relay/docs/Deploy-End-to-End-to-AWS.md) — AWS relay + on-prem shim
-- [`Bridge end-to-end deployment`](com-event-bridge/docs/Deploy-End-to-End-On-Prem.md) — single-box on-prem deployment
+- [`Azure end-to-end deployment`](com-event-relay/docs/Deploy-End-to-End-to-Azure.md): Azure relay + on-prem shim
+- [`AWS end-to-end deployment`](com-event-relay/docs/Deploy-End-to-End-to-AWS.md): AWS relay + on-prem shim
+- [`Bridge end-to-end deployment`](com-event-bridge/docs/Deploy-End-to-End-On-Prem.md): single-box on-prem deployment
 
 Each flow covers the public receiver, COM webhooks, raise/clear behavior, and target delivery.
 
 ## Reference documentation
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — implementation-level architecture and process mapping
-- [`com-event-core/README.md`](com-event-core/README.md) — adapter framework and adding new targets
-- [`com-event-relay/README.md`](com-event-relay/README.md) — relay/shim architecture and configuration
-- [`com-event-bridge/README.md`](com-event-bridge/README.md) — bridge configuration and deployment
-- [`com-event-bridge/HARDENING.md`](com-event-bridge/HARDENING.md) — on-prem hardening guidance
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): implementation-level architecture and process mapping
+- [`com-event-core/README.md`](com-event-core/README.md): adapter framework and adding new targets
+- [`com-event-relay/README.md`](com-event-relay/README.md): relay/shim architecture and configuration
+- [`com-event-bridge/README.md`](com-event-bridge/README.md): bridge configuration and deployment
+- [`com-event-bridge/HARDENING.md`](com-event-bridge/HARDENING.md): on-prem hardening guidance
 
 ---
 
 # Roadmap
 
 Planned or candidate improvements include:
+
+- **Async post-creation AI analysis**  
+  Deliver the ticket immediately, run the [AI analysis](com-event-core/README.md#ai-analysis-enrichment) out-of-band, then append it to the already-created item (a comment on the GitHub/Jira issue, a thread reply in Slack/Teams). Removes analysis latency from the delivery path entirely. Needs an `update(event)` addition to the adapter contract for stateful targets.
+
+- **AI analysis for alert-sourced events**  
+  COM alert webhooks do not carry the server's iLO address, so alert events are currently delivered without analysis. Resolving serial number → iLO address would extend analysis to them.
 
 - **Multiple instances of the same adapter type**  
   Add per-instance configuration namespaces so two webhooks, two Slack targets, or two instances of another adapter can coexist.
@@ -535,10 +566,10 @@ Planned or candidate improvements include:
   Extend the same relay/bridge to also receive HPE GreenLake webhooks alongside COM. 
 
 - **Additional shim deployment helpers**  
-  Provide ready-made ways to run the on-prem outbound shim as a supervised, auto-restarting service — for example a `systemd` unit for bare-metal/VM hosts and a Compose/Kubernetes manifest for container hosts — so it survives reboots and crashes without manual intervention.
+  Provide ready-made ways to run the on-prem outbound shim as a supervised, auto-restarting service, for example a `systemd` unit for bare-metal/VM hosts and a Compose/Kubernetes manifest for container hosts, so it survives reboots and crashes without manual intervention.
 
 - **Infrastructure-as-code templates**  
-  Add declarative templates (Azure Bicep, AWS CloudFormation) that create the cloud relay stack — the receiver, the durable queue, and the required roles — in one reproducible command, plus a simplified parameter-driven entry point instead of running many individual CLI steps.
+  Add declarative templates (Azure Bicep, AWS CloudFormation) that create the cloud relay stack, the receiver, the durable queue, and the required roles, in one reproducible command, plus a simplified parameter-driven entry point instead of running many individual CLI steps.
 
 Contributions and real-world adapter feedback are welcome.
 
@@ -546,4 +577,4 @@ Contributions and real-world adapter feedback are welcome.
 
 # License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT: see [`LICENSE`](LICENSE).

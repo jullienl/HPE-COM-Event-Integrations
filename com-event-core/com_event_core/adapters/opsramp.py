@@ -24,6 +24,7 @@ import time
 
 import httpx
 
+from com_event_core.enrich.render import analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -81,6 +82,14 @@ class OpsRampAdapter(TargetAdapter):
         # On a clear (recovery), send currentState 'Ok' with the SAME alertKey so
         # OpsRamp auto-heals the alert it previously raised.
         state = "Ok" if e.action == ACTION_CLEAR else _STATE.get(e.severity, "Warning")
+        description = e.description or (
+            f"COM operation {e.operation} on {e.resource_serial or 'unknown'} "
+            f"(event {e.event_id})"
+        )
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        analysis = analysis_text(e)
+        if analysis:
+            description = f"{description}\n\n{analysis}"
         return {
             "serviceName": self._service,
             "device": {
@@ -94,10 +103,7 @@ class OpsRampAdapter(TargetAdapter):
             "alertKey": e.correlation_key or e.dedup_key,
             "component": e.resource_model or "",
             "subject": e.title,
-            "description": e.description or (
-                f"COM operation {e.operation} on {e.resource_serial or 'unknown'} "
-                f"(event {e.event_id})"
-            ),
+            "description": description,
             "app": "HPE COM",
             "alertTime": e.time_created or "",
         }

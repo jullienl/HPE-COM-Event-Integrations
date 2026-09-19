@@ -76,6 +76,15 @@ class DynatraceAdapter(TargetAdapter):
             props["com.description"] = e.description
         if e.resolution:
             props["com.resolution"] = e.resolution
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        if e.analysis_summary:
+            props["com.analysis_summary"] = e.analysis_summary
+        if e.analysis_root_cause:
+            props["com.analysis_root_cause"] = e.analysis_root_cause
+        if e.analysis_confidence is not None:
+            props["com.analysis_confidence"] = f"{e.analysis_confidence:.2f}"
+        if e.analysis_actions:
+            props["com.analysis_actions"] = " | ".join(e.analysis_actions)
 
         payload: dict = {
             "eventType": event_type,

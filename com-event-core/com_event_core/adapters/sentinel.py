@@ -69,7 +69,7 @@ class SentinelAdapter(TargetAdapter):
         return f"SharedKey {self._workspace_id}:{encoded}"
 
     def _to_record(self, e: CanonicalEvent) -> dict:
-        return {
+        record: dict = {
             "event_id": e.event_id,
             "operation": e.operation,
             "action": e.action,
@@ -85,6 +85,18 @@ class SentinelAdapter(TargetAdapter):
             "resolution": e.resolution,
             "category": e.category,
         }
+        # Optional AI analysis (empty/None unless an enricher ran successfully).
+        # Data Collector API columns are flat scalars, so the action list is
+        # joined into one string rather than sent as a nested array (the same
+        # reason `tags` -- a dict -- is left out of this record above).
+        record["analysis_summary"] = e.analysis_summary
+        record["analysis_root_cause"] = e.analysis_root_cause
+        record["analysis_confidence"] = e.analysis_confidence
+        if e.analysis_actions:
+            record["analysis_actions"] = "; ".join(
+                f"{i}. {a}" for i, a in enumerate(e.analysis_actions, 1)
+            )
+        return record
 
     def forward(self, event: CanonicalEvent) -> None:
         body = json.dumps([self._to_record(event)], default=str)

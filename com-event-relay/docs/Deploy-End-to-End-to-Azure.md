@@ -152,7 +152,7 @@ $RG      = "rg-com-relay"                                            # Azure res
 $LOC     = "westeurope"                                              # Azure region to deploy into (override if you prefer another)
 $SB_NS   = "sbcomrelay$([System.Random]::new().Next(10000,99999))"   # Service Bus namespace name — must be GLOBALLY unique (random suffix)
 $QUEUE   = "com-events"                                              # Service Bus queue name; the relay and shim must both use this value
-$ACA_ENV = "aca-com-relay"                                           # Container Apps environment (the shared host for the relay app)
+$ACA_ENV = "aca-com-relay"                                           # Azure Container Apps environment (the shared host for the relay app)
 $APP     = "com-event-relay"                                         # Container App name for the relay
 $IMAGE   = "ghcr.io/jullienl/com-event-relay:latest"                 # relay container image pulled by Azure (published by CI to GHCR)
 $HDR     = "x-shim-secret"                                           # HTTP header COM sends carrying the shared secret (auth on every POST)
@@ -419,7 +419,7 @@ The difference is `old/...` (raise: was `OK`, so it **left** `OK`) vs `new/...`
 issue the raise opened. **Without the clear webhook, issues open but never close.**
 
 COM will first call `GET` (the handshake in step 3) and only enable the webhook
-once it echoes the challenge over public HTTPS with a valid certificate — ACA
+once it echoes the challenge over public HTTPS with a valid certificate — ACA (Azure Container Apps)
 provides that TLS automatically.
 
 **Verify the webhook was created and enabled.** In the same Postman collection,

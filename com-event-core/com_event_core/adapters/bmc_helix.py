@@ -45,6 +45,7 @@ import os
 
 import httpx
 
+from com_event_core.enrich.render import analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -104,6 +105,10 @@ class BmcHelixAdapter(TargetAdapter):
             lines.append(e.description)
         if e.resolution:
             lines.append(f"Suggested resolution: {e.resolution}")
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        analysis = analysis_text(e)
+        if analysis:
+            lines += ["", analysis]
         # Correlation marker on its own line so a clear can find the incident.
         lines.append(self._marker(e))
         return "\n".join(lines)

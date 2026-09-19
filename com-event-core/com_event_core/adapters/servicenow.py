@@ -19,6 +19,7 @@ import os
 
 import httpx
 
+from com_event_core.enrich.render import analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -52,22 +53,32 @@ class ServiceNowAdapter(TargetAdapter):
         # em_event: a clear is a Clear-severity (5) event with the same
         # message_key, which auto-closes the correlated alert.
         severity = "5" if e.action == ACTION_CLEAR else _SEVERITY_NUM.get(e.severity, "4")
+        description = e.description or e.title
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        analysis = analysis_text(e)
+        if analysis:
+            description = f"{description}\n\n{analysis}"
         return {
             "source": "HPE COM",
             "event_class": "compute-ops-management",
             "resource": e.resource_model or "",
             "node": e.resource_serial or "",
             "severity": severity,
-            "description": e.description or e.title,
+            "description": description,
             # Stable per-problem key so the raise and its later clear correlate.
             "message_key": e.correlation_key or e.dedup_key,
             "additional_info": ";".join(f"{k}={v}" for k, v in e.tags.items()),
         }
 
     def _to_incident(self, e: CanonicalEvent) -> dict:
+        description = e.description or f"COM operation {e.operation} on {e.resource_serial}"
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        analysis = analysis_text(e)
+        if analysis:
+            description = f"{description}\n\n{analysis}"
         return {
             "short_description": e.title,
-            "description": e.description or f"COM operation {e.operation} on {e.resource_serial}",
+            "description": description,
             "cmdb_ci": e.resource_serial or "",
             "correlation_id": e.correlation_key or e.dedup_key,
         }

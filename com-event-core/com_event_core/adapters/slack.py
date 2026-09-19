@@ -20,6 +20,7 @@ import os
 
 import httpx
 
+from com_event_core.enrich.render import HEADING, has_analysis
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -75,6 +76,43 @@ class SlackAdapter(TargetAdapter):
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": _clip(e.description, 2900)},
             })
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        # Rendered as separate Block Kit blocks — not one joined mrkdwn blob —
+        # so summary / root cause / confidence / actions stay visually distinct
+        # instead of running together as a wall of text.
+        if has_analysis(e):
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f":robot_face: *{HEADING}*"}],
+            })
+            if e.analysis_summary:
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": _clip(e.analysis_summary, 2900)},
+                })
+            meta_fields = []
+            if e.analysis_root_cause:
+                meta_fields.append({
+                    "type": "mrkdwn",
+                    "text": f"*Likely root cause:*\n{_clip(e.analysis_root_cause, 1500)}",
+                })
+            if e.analysis_confidence is not None:
+                meta_fields.append({
+                    "type": "mrkdwn",
+                    "text": f"*Confidence:*\n{e.analysis_confidence:.0%}",
+                })
+            if meta_fields:
+                blocks.append({"type": "section", "fields": meta_fields})
+            if e.analysis_actions:
+                actions_text = "\n".join(
+                    f"{i}. {a}" for i, a in enumerate(e.analysis_actions, 1)
+                )
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn",
+                             "text": _clip(f"*Recommended actions:*\n{actions_text}", 2900)},
+                })
         elements: list[dict] = []
         if e.mgmt_url:
             elements.append({

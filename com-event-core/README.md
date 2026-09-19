@@ -36,6 +36,7 @@ It contains the COM event normalisation, `CanonicalEvent` model, de-duplication,
   - [Adapter reference table](#adapter-reference-table)
   - [Finding an adapter's environment variables](#finding-an-adapters-environment-variables)
 - [Known per-target tuning](#known-per-target-tuning)
+- [AI analysis enrichment](#ai-analysis-enrichment)
 - [TLS interception (corporate proxy)](#tls-interception-corporate-proxy)
 - [Usage](#usage)
 - [Example: COM event to CanonicalEvent](#example-com-event-to-canonicalevent)
@@ -88,7 +89,8 @@ com-event-bridge/bridge
 flowchart LR
     COM[COM webhook payload] --> NORMALIZE[normalize]
     NORMALIZE --> EVENT[CanonicalEvent]
-    EVENT --> DEDUP[DedupStore]
+    EVENT --> ENRICH["enrich_events<br/>(optional, off by default)"]
+    ENRICH --> DEDUP[DedupStore]
     DEDUP --> DELIVER[deliver / deliver_events]
 
     DELIVER --> SN[ServiceNow]
@@ -115,6 +117,7 @@ The shared package starts once the COM payload is ready to be interpreted and de
 | `com_event_core.dedup` | SQLite TTL de-duplication store |
 | `com_event_core.adapters` | Adapter discovery and all built-in target adapters |
 | `com_event_core.deliver` | Single- and multi-target delivery with per-adapter de-duplication and partial-failure handling |
+| `com_event_core.enrich` | Optional analysis stage that runs *between* normalise and deliver (see [AI analysis enrichment](#ai-analysis-enrichment)); off by default |
 | `com_event_core.secrets` | Resolve secrets from environment variables or `<NAME>_FILE` projected files |
 
 Target selection is controlled with:
@@ -763,6 +766,457 @@ Validate:
 - `cmdb_ci` mapping
 - state/resolution values
 - permissions to search and update the correlated incident
+
+---
+
+# AI analysis enrichment
+
+**AI-assisted incident investigation and remediation.** An optional stage that
+turns intelligent, event-driven operations from *"here's an alert"* into *"here's
+an alert, here's what's likely wrong, here's how confident we are, and here's
+what to check or do next"* — attached **before** the event is delivered, so the
+analysis lands inside the ticket or chat message at creation rather than
+arriving separately. It is **off by default**.
+
+When enabled, an AI agent analyzes the collected Redfish evidence alongside the
+COM event and produces a structured incident report that keeps **observed
+facts** (`evidence` — the specific signals in the data) separate from
+**hypothesis** (`likely_root_cause` — the agent's best explanation for them). It
+proposes a likely cause, assesses its own confidence in that cause, and
+recommends concrete next steps — further diagnostic checks as well as
+remediation actions — without presenting an unverified guess as a definitive
+root cause: the underlying prompt is instructed to base every conclusion on the
+supplied data and say so plainly when data is missing. See
+[The analyzer contract](#the-analyzer-contract) for the exact fields, and
+[agents.py](https://github.com/jullienl/ai-gateway/blob/main/agents.py) for the prompt that produces them.
+
+## Enable it with `ENRICHERS`, not `TARGETS`
+
+Enrichment and delivery are selected separately:
+
+```bash
+ENRICHERS=ilo_ai          # analyse the event
+TARGETS=jira              # then deliver it
+```
+
+`TARGETS` chooses where an event is **sent**; `ENRICHERS` chooses what happens to
+it **on the way**. Putting `ilo_ai` in `TARGETS` is not valid and will fail at
+startup with an unknown-target error.
+
+```text
+normalize()  →  [CanonicalEvent]
+                     ↓
+                enrich_events()          ← fetch iLO evidence, call the analyzer
+                     │                     adds 4 fields to the event:
+                     │                       analysis_summary
+                     │                       analysis_root_cause
+                     │                       analysis_confidence
+                     │                       analysis_actions
+                     ↓
+                deliver_events()  →  github / jira / slack / …
+```
+
+Enrichment runs once per event, before any adapter, so every target in `TARGETS`
+receives the same analysed event. It works identically in the shim and the
+bridge.
+
+## Where it runs
+
+| Component | Hosts it? | Why |
+|---|:---:|---|
+| Shim (on-prem) | ✅ | On the customer network; can reach the BMC subnet |
+| Bridge (on-prem) | ✅ | Same |
+| Relay (cloud) | ❌ | No iLO reachability |
+
+The shim/bridge opens an **additional outbound** connection to the management
+network. No inbound port into the customer network is opened, so the project's
+outbound-only property is unchanged.
+
+## The `ilo_ai` enricher
+
+For a server *problem* event it reads a small set of Redfish data from the
+server's own iLO, sends it with the event to an analyzer service, and writes the
+result onto four `CanonicalEvent` fields: `analysis_summary`,
+`analysis_root_cause`, `analysis_confidence`, `analysis_actions`. Adapters that
+support it render these in the ticket or message they create.
+
+The iLO address comes from the event itself (`mgmt_url`), so no CMDB or inventory
+lookup is required.
+
+The analyzer is a **separate service**, not part of this package, so you can use
+a hosted model or run one on-premises without changing the shim or the bridge.
+Any service that implements the contract below works; see
+[Set up the analyzer](#set-up-the-analyzer) for how to point the shim or bridge
+at one.
+
+### The analyzer contract
+
+The shim or bridge takes `AI_ANALYZER_URL` as a **base** URL and appends
+`/agent/<agent>`
+(`AI_AGENT`, default `com-rca`). It sends:
+
+```json
+{
+  "input": {
+    "event": {
+      "event_id": "…", "title": "…", "severity": "critical",
+      "description": "…", "category": "…",
+      "resource_serial": "…", "resource_model": "…", "resource_name": "…",
+      "time_created": "…"
+    },
+    "redfish": { "source": "…", "resources": {}, "components": {}, "log": [] }
+  },
+  "session_id": "<correlation key, so repeat analyses of one problem thread together>"
+}
+```
+
+and expects HTTP `200` with:
+
+```json
+{
+  "result": {
+    "summary": "…",
+    "likely_root_cause": "…",
+    "confidence": 0.94,
+    "recommended_actions": ["…", "…"]
+  }
+}
+```
+
+`confidence` may be a number `0–1`, a percentage such as `"80%"`, or a word
+(`high` / `medium` / `low`); `recommended_actions` may be a list of strings, a
+list of objects with an `action` or `step` field, or one newline-separated
+string. Any other field in `result` is ignored, and a missing field is simply
+omitted from the ticket. If `AI_ANALYZER_TOKEN` is set, it is sent as
+`Authorization: Bearer <token>`.
+
+### What is sent to the analyzer
+
+Only a bounded slice of the Redfish tree, so the payload stays small enough to
+send and to fit a model's context:
+
+| Source | Kept |
+| --- | --- |
+| `Systems/1` | Whole resource — health rollup, power state, identity |
+| `Chassis/1/Thermal`, `Chassis/1/Power` | Sensors that are unhealthy or past one of their own thresholds, plus a kept-of-total count |
+| `Systems/1/Memory` | Unhealthy DIMMs, plus a count |
+| Drive collections | Unhealthy drives, plus a count |
+| `LogServices/IML/Entries` | Non-`OK` entries, newest first, capped at `ILO_MAX_LOG_ENTRIES` |
+
+Drive collections are discovered at run time from both the HPE `SmartStorage`
+tree and the standard `Systems/1/Storage` tree, so no controller ids need
+configuring. A resource that a given iLO does not expose is skipped and noted in
+the bundle rather than treated as an error.
+
+On a DL360 this produces a bundle of roughly 13 KB while retaining the faulty
+component — the full `Thermal` resource alone carries 48 temperature sensors,
+nearly all of them healthy.
+
+The bounds are adjustable, and you can add Redfish paths if your servers report a
+fault somewhere not listed above — see [step 3](#3-configure-the-shim-or-bridge).
+
+## Set up the analyzer
+
+### 1. Run an analyzer service
+
+Stand up a service that implements [the contract above](#the-analyzer-contract)
+and that the shim or bridge can reach over HTTP. It needs no inbound access from
+the internet and no access to COM — only the shim or bridge calls it.
+
+A standalone repo ships one such service: [AI Gateway](https://github.com/jullienl/ai-gateway),
+which fronts a GitHub Copilot entitlement (and speaks OpenAI/Anthropic natively
+too) and already exposes the `com-rca` agent used by default. The walkthrough
+below wires it to either consumer — *"the shim or bridge"* means whichever of
+the two you run. Any other service that implements the contract works too,
+nothing here is gateway-specific.
+
+#### Get a Copilot PAT
+
+Copilot has no shared service token; it is licensed per named user. Create a
+**fine-grained personal access token** on an account that has Copilot enabled,
+and keep it somewhere the gateway can mount it as a file. If your organization
+routes personal and enterprise Copilot accounts differently, use the
+**enterprise/business** account — a personal account may be unable to reach
+the model API from a corporate network.
+
+#### Run the gateway
+
+The shim or bridge must be able to reach it over HTTP. Pick the option that
+matches where that consumer runs, then confirm it's up before step 3.
+
+**Option A — local, for a first test:**
+
+```powershell
+git clone https://github.com/jullienl/ai-gateway.git
+cd ai-gateway
+pip install -r requirements.txt
+uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+Locally the SDK reuses your existing `gh` / Copilot CLI login, so no token is
+needed.
+
+**Option B — as a container, next to the shim or bridge:**
+
+Vault the PAT on the host first — never bake it into the image or pass it as a
+plain `-e COPILOT_GITHUB_TOKEN=...` where you can avoid it (that's the
+dev-fallback path, visible to `docker inspect`):
+
+```bash
+sudo mkdir -p /run/secrets
+sudo sh -c 'umask 077; read -rs PAT && printf "%s" "$PAT" > /run/secrets/copilot_pat'
+sudo chown root:root /run/secrets/copilot_pat   # paste the PAT, press Enter
+```
+
+`umask 077` plus the trailing `chown` keep the file at `600 root:root`; the
+container reads it read-only via the bind mount below and it never touches the
+image, `docker inspect`, or shell history. `/run/secrets` is `tmpfs` on most
+distros, so the plaintext doesn't survive a reboot either — recreate it from
+your vault/password manager when the host restarts.
+
+Build the image once, from a clone of the gateway repo:
+
+```bash
+git clone https://github.com/jullienl/ai-gateway.git
+cd ai-gateway
+docker build -t ai-gateway:1.0.1 .
+```
+
+Then join it to the same network the shim/bridge already runs on, so it's
+reachable by name (`http://ai-gateway:8000`) — with Docker Compose, add it as a
+service next to the shim/bridge:
+
+```yaml
+# docker-compose.yml
+services:
+  ai-gateway:
+    image: ai-gateway:1.0.1
+    container_name: ai-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      COPILOT_GITHUB_TOKEN_FILE: /run/secrets/copilot_pat
+    secrets:
+      - copilot_pat
+    networks:
+      - com-events
+networks:
+  com-events:
+    external: true   # the network the shim/bridge already runs on
+secrets:
+  copilot_pat:
+    file: ./copilot-pat.txt   # 600, gitignored
+```
+
+```bash
+docker compose up -d --build
+```
+
+Or with plain `docker run`:
+
+```bash
+docker run -d --name ai-gateway --network com-events -p 8000:8000 \
+  -v /run/secrets/copilot_pat:/run/secrets/copilot_pat:ro \
+  -e COPILOT_GITHUB_TOKEN_FILE=/run/secrets/copilot_pat \
+  ai-gateway:1.0.1
+```
+
+Either way, the token is read **file-first** so it does not appear in
+`docker inspect` or `/proc/<pid>/environ`.
+
+On a network that inspects TLS, the gateway also needs your corporate CA
+bundle — it makes its own outbound HTTPS call to the model API and will
+otherwise fail with a certificate error. The bundle must contain the internal
+CA **plus** the public roots, `SSL_CERT_FILE` *replaces* the trust store
+rather than adding to it, so a file holding only the corporate CA breaks every
+other outbound call. Build and verify it first:
+[TLS interception (corporate proxy)](#tls-interception-corporate-proxy) below
+has the recipe, then mount the result and set `SSL_CERT_FILE` /
+`NODE_EXTRA_CA_CERTS` on the container.
+
+**Option C — Azure Container Apps:**
+
+See the gateway's
+[GUIDE.md §10](https://github.com/jullienl/ai-gateway/blob/main/GUIDE.md#10-deploying-to-azure-container-apps-primary-path).
+Use **internal** ingress; the shim or bridge then reaches it by app name
+(`http://ai-gateway`) if it runs in the same environment.
+
+**Confirm it is up:**
+
+```bash
+curl http://<gateway-host>:8000/health
+curl http://<gateway-host>:8000/agents    # com-rca must be listed
+```
+
+No GitHub Copilot license? The gateway's
+[Bring your own model](https://github.com/jullienl/ai-gateway#no-github-copilot-license-bring-your-own-model)
+section is a minimal analyzer built on OpenAI/Anthropic/any other provider
+instead — point `AI_ANALYZER_URL` at it the same way.
+
+Because the analysis prompt lives in the analyzer, not in the shim or bridge, you
+can swap models or reword the prompt without touching this project. The one thing
+to keep is the **field names** — `summary`, `likely_root_cause`, `confidence` and
+`recommended_actions` are read by name, and renaming any of them makes the
+analysis disappear from tickets without an error.
+
+### 2. Create a read-only iLO account
+
+The shim or bridge reads evidence over Redfish with a single account, used across
+the fleet. It only issues `GET`s, so give it the **lowest read-only role** your
+iLO offers, and keep the management network reachable only from that host.
+
+### 3. Configure the shim or bridge
+
+```bash
+ENRICHERS=ilo_ai
+AI_ANALYZER_URL=http://analyzer:8000   # base URL; /agent/<agent> is appended
+
+ILO_USERNAME=com-readonly
+ILO_PASSWORD_FILE=/run/secrets/ilo_password
+ILO_CA_BUNDLE=/etc/ssl/certs/ilo-ca.pem
+```
+
+Optional settings:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `AI_AGENT` | `com-rca` | Path segment appended to `AI_ANALYZER_URL` |
+| `AI_TIMEOUT` | `90` | Seconds to wait for an analysis |
+| `AI_TENANT` | — | Sent as `tenant` in the request body |
+| `AI_ANALYZER_TOKEN` | — | Sent as `Authorization: Bearer` |
+| `AI_MIN_SEVERITY` | `warning` | Severity floor for analysing an event |
+| `AI_MAX_ANALYSES_PER_HOUR` | `60` | Hourly cap |
+| `AI_MAX_ANALYSES_PER_DAY` | `500` | Daily cap |
+| `AI_CACHE_TTL_SECONDS` | `3600` | How long a repeat analysis is reused |
+| `ILO_MAX_LOG_ENTRIES` | `25` | IML entries kept |
+| `ILO_MAX_MEMBERS` | `64` | Unhealthy members kept per collection |
+| `ILO_EXTRA_PATHS` | — | Extra Redfish paths to collect, comma-separated |
+| `ILO_INSECURE` | — | `1` skips iLO TLS verification; logs a warning on every use |
+
+See the [shim](../com-event-relay/shim/.env.example) or
+[bridge](../com-event-bridge/bridge/.env.example) `.env.example` for the full
+variable list.
+
+### 4. Verify
+
+Send a test event through the shim or bridge and watch its log. A successful
+analysis logs:
+
+```text
+event <id> analysed in 12.4s (confidence=0.94)
+```
+
+The ticket or message the adapter creates then carries an **AI analysis** section.
+
+If analysis is missing, the log says why, it never fails the delivery:
+
+| Log line | Cause |
+| --- | --- |
+| `enrichment by ilo_ai failed: …` | The iLO or the gateway could not be reached, or the analysis errored |
+| `no mgmt_url on event <id> …` | An alert-sourced event, which carries no iLO address |
+| `AI analysis budget exhausted …` | An hourly or daily cap was reached — see [What gets analysed, and what it costs](#what-gets-analysed-and-what-it-costs) |
+
+When the failure came from the gateway, its status code narrows it down:
+
+| Status | Meaning |
+| --- | --- |
+| `502` | The Copilot SDK or the model rejected the request. `The requested model is not supported` means the account behind the PAT is not entitled to the model that agent uses — change `model` for `com-rca` in [agents.py](https://github.com/jullienl/ai-gateway/blob/main/agents.py), or use an entitled account |
+| `503` | The Copilot runtime is not ready yet; retry once it has started |
+| `404` | Unknown agent name: check `AI_AGENT` against `GET /agents` |
+| `400` / `404` on `tenant` | `AI_TENANT` is malformed or has no PAT configured |
+
+## What gets analysed, and what it costs
+
+**Only real problems.** An event is analysed when all three hold:
+
+| Condition | Default | Change with |
+|---|---|---|
+| The event is a `raise` | — | — |
+| Severity is at or above the threshold | `warning` | `AI_MIN_SEVERITY` |
+| The event carries a BMC address (`mgmt_url`) | — | — |
+
+Clears are never analysed. Because server webhooks are snapshots, a healthy
+condition produces a clear on *every* delivery, so analysing them would cost
+money for no benefit.
+
+**Repeat analyses are cached.** A repeated event within the default 1-hour
+window reuses the existing analysis instead of requesting and paying for a new
+one. Technically: cached per `correlation_key` for `AI_CACHE_TTL_SECONDS`
+(default 3600s). This matters because a delivery can be retried — for example
+when the same event goes out to several targets and one of them fails — and
+without the cache, that retry would trigger (and pay for) a brand new analysis
+of a problem already analysed moments earlier.
+
+**Spending is capped** by `AI_MAX_ANALYSES_PER_HOUR` and
+`AI_MAX_ANALYSES_PER_DAY`. When a limit is reached, events are delivered without
+analysis until the window rolls over. Both hitting the cap and recovering from it
+are logged at `WARNING`:
+
+```text
+AI analysis budget exhausted (60/hour, 500/day); skipping analysis until the
+window resets — events are still delivered, just unenriched
+AI analysis budget window reset; analysis re-enabled
+```
+
+So if tickets stop carrying analysis, the log says why.
+
+**Failures never block delivery.** If the iLO is unreachable, or the analyzer
+errors or times out, the event is delivered **without** the analysis and the
+reason is logged:
+
+```text
+event <id> enrichment by ilo_ai failed: <reason>; delivering unenriched
+```
+
+Analysis is an enhancement, so no analyzer problem can delay or lose an event.
+
+> **Not available in bridge `sync` mode.** An analysis round-trip takes seconds
+> to tens of seconds, which is too long to spend while COM waits for its
+> acknowledgement — COM never re-sends a failed event, so a timeout would lose
+> it. The bridge **refuses to start** with `ENRICHERS` set and
+> `DELIVERY_MODE=sync`. Use `spool` (the bridge default) or the relay + queue.
+
+## Alert events are not analysed
+
+Analysis needs a BMC address, and COM alert payloads do not carry one — only
+server events do. Alert-sourced events are delivered normally, with one line in
+the log:
+
+```text
+no mgmt_url on event <id> (source_type=alert); skipping AI analysis
+```
+
+This is a skip, not an error: nothing is retried, delayed, or lost. Extending
+analysis to alerts would require a serial-to-iLO-address lookup, which is not
+currently in scope.
+
+## The shared iLO credential
+
+A single read-only account replicated across the fleet is operationally simplest,
+but it is a fleet-wide single point of compromise — one leaked secret is BMC
+access to every server. In value order:
+
+- **Least privilege** — a dedicated **read-only** Redfish account. The collector
+  only issues `GET`s. Highest-value mitigation by far.
+- **File-first secret** — `ILO_PASSWORD_FILE` via `get_secret()`, so it doesn't
+  leak through `docker inspect` or `/proc/<pid>/environ`.
+- **TLS verification** — iLOs ship self-signed certificates, so the tempting move
+  is to disable verification, which makes the shared credential interceptable on
+  the management LAN. Set `ILO_CA_BUNDLE`; `ILO_INSECURE=1` exists but logs a
+  warning every time. One caveat that costs a debugging round otherwise:
+  `ILO_CA_BUNDLE` must name the CA that **issued** the certificate. Pointing it
+  at the iLO's own self-signed certificate works only if that certificate carries
+  `basicConstraints: CA:TRUE` — OpenSSL refuses a plain leaf certificate as a
+  trust anchor and fails with `invalid CA certificate`. Where the iLO presents a
+  plain leaf, the real choices are to install a CA-issued certificate on the iLO,
+  or to accept `ILO_INSECURE=1` on a segmented management LAN.
+- **Network segmentation** — the BMC network reachable only from the shim or
+  bridge host.
+- **Rotation** — have a story for rolling the fleet credential before you need it.
+
+**Privacy.** iLO telemetry (serials, hostnames, IPs, IML text) leaving the
+customer network to a hosted model is a real enterprise review item. The
+self-hosted analyzer backend is the answer where that matters.
 
 ---
 

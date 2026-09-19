@@ -5,9 +5,10 @@ Drains the cloud queue (Azure Service Bus or AWS SQS) that the relay fills, and
 for each message:
 
   1. parses + normalises the COM event into a CanonicalEvent,
-  2. de-duplicates using a local SQLite TTL store,
-  3. forwards it to the selected TARGETS via their adapters,
-  4. acknowledges the message (complete / abandon / dead-letter).
+  2. optionally enriches it with AI analysis (ENRICHERS, default off),
+  3. de-duplicates using a local SQLite TTL store,
+  4. forwards it to the selected TARGETS via their adapters,
+  5. acknowledges the message (complete / abandon / dead-letter).
 
 Opens only an OUTBOUND connection to the cloud queue — no inbound listener, so
 it runs safely inside a protected network. Select one or more targets with
@@ -24,7 +25,14 @@ Run:
 import json
 import logging
 
-from com_event_core import DedupStore, deliver_events, get_adapters, normalize
+from com_event_core import (
+    DedupStore,
+    deliver_events,
+    enrich_events,
+    get_adapters,
+    get_enrichers,
+    normalize,
+)
 from core.queue import get_consumer
 
 logging.basicConfig(level=logging.INFO)
@@ -33,11 +41,14 @@ log = logging.getLogger("com-event-shim")
 
 def main() -> None:
     adapters = get_adapters()        # selected by TARGETS; validates config
+    enrichers = get_enrichers()      # selected by ENRICHERS; empty by default
     consumer = get_consumer()        # selected by QUEUE_BACKEND; validates its config
     dedup = DedupStore()
 
     targets = ", ".join(a.name for a in adapters)
     log.info("shim starting; targets=%s draining queue outbound-only", targets)
+    if enrichers:
+        log.info("enrichment enabled: %s", ", ".join(e.name for e in enrichers))
 
     try:
         for msg in consumer.receive():
@@ -51,6 +62,9 @@ def main() -> None:
 
             try:
                 events = normalize(payload)
+                # Enrich before delivery so every adapter renders the analysis.
+                # Never raises — a failed enrichment delivers the event as-is.
+                enrich_events(events, enrichers)
                 # Fan-out every derived event to every adapter. deliver_events()
                 # skips targets already done for an event and raises if any
                 # target fails, so abandon → redelivery re-attempts only the

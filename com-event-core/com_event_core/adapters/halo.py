@@ -33,6 +33,7 @@ import time
 
 import httpx
 
+from com_event_core.enrich.render import analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -105,6 +106,10 @@ class HaloAdapter(TargetAdapter):
             details += f"\n\n{e.description}"
         if e.resolution:
             details += f"\n\nSuggested resolution: {e.resolution}"
+        # Optional AI analysis (empty unless an enricher ran successfully).
+        analysis = analysis_text(e)
+        if analysis:
+            details += f"\n\n{analysis}"
         impact = _IMPACT.get(e.severity, 3)
         return {
             "summary": e.title,

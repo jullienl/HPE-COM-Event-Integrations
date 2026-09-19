@@ -25,7 +25,7 @@ import sqlite3
 import threading
 import time
 
-from com_event_core import DedupStore, deliver_events, normalize
+from com_event_core import DedupStore, deliver_events, enrich_events, normalize
 
 log = logging.getLogger("com-event-bridge.spool")
 
@@ -118,11 +118,13 @@ class SpoolStore:
 class SpoolWorker(threading.Thread):
     """Background thread that drains the spool into the target adapter(s)."""
 
-    def __init__(self, spool: SpoolStore, adapters, dedup: DedupStore) -> None:
+    def __init__(self, spool: SpoolStore, adapters, dedup: DedupStore,
+                 enrichers=()) -> None:
         super().__init__(name="spool-worker", daemon=True)
         self._spool = spool
         self._adapters = adapters
         self._dedup = dedup
+        self._enrichers = list(enrichers)
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -140,6 +142,11 @@ class SpoolWorker(threading.Thread):
             row_id, body, attempts = claimed
             try:
                 events = normalize(json.loads(body.decode("utf-8")))
+
+                # Enrich before delivery so every adapter renders the analysis.
+                # Never raises — a failed enrichment delivers the event as-is,
+                # so a slow or broken analyzer cannot stall the spool drain.
+                enrich_events(events, self._enrichers)
 
                 # Fan-out every derived event to every adapter. deliver_events()
                 # skips targets already done for an event and raises if any

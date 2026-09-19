@@ -51,6 +51,11 @@ class SplunkAdapter(TargetAdapter):
                 "correlation_key": e.correlation_key,
                 "description": e.description,
                 "resolution": e.resolution,
+                # Optional AI analysis (empty/None unless an enricher ran successfully).
+                "analysis_summary": e.analysis_summary,
+                "analysis_root_cause": e.analysis_root_cause,
+                "analysis_confidence": e.analysis_confidence,
+                "analysis_actions": e.analysis_actions,
             },
         }
         if self._index:

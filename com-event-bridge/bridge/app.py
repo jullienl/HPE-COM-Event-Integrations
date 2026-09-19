@@ -43,7 +43,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from com_event_core import DedupStore, deliver_events, get_adapters, get_secret, normalize
+from com_event_core import (
+    DedupStore,
+    deliver_events,
+    get_adapters,
+    get_enrichers,
+    get_secret,
+    normalize,
+)
 from core.spool import SpoolFull, SpoolStore, SpoolWorker
 
 
@@ -99,6 +106,26 @@ if DELIVERY_MODE == "spool" and not os.environ.get("SPOOL_PATH"):
 adapters = get_adapters()
 dedup = DedupStore()
 
+# Optional AI analysis stage (ENRICHERS; empty by default). Validated here so a
+# misconfiguration fails at startup rather than on the first event.
+enrichers = get_enrichers()
+
+# Enrichment is an AI round-trip: seconds to tens of seconds. In sync mode that
+# time is spent while COM waits for its ack, and COM does NOT retry — a timeout
+# returns 5xx and the event is simply lost, while sustained 5xx eventually
+# DISABLES the webhook. Refuse the combination instead of shipping a mode that
+# loses events under load.
+if enrichers and DELIVERY_MODE == "sync":
+    names = ", ".join(e.name for e in enrichers)
+    raise ValueError(
+        f"ENRICHERS={names} cannot be used with DELIVERY_MODE=sync. Enrichment "
+        "adds an AI round-trip (seconds to tens of seconds) to the request COM "
+        "is waiting on; COM never resends a failed event, so a timeout loses it "
+        "and sustained 5xx disables the webhook. Use DELIVERY_MODE=spool (the "
+        "default): the event is persisted and acked immediately, then enriched "
+        "and delivered by the background worker."
+    )
+
 # In spool mode, a durable buffer + background drain worker are created at startup.
 spool: SpoolStore | None = None
 worker: SpoolWorker | None = None
@@ -109,9 +136,11 @@ async def lifespan(_: FastAPI):
     global spool, worker
     if DELIVERY_MODE == "spool":
         spool = SpoolStore()
-        worker = SpoolWorker(spool, adapters, dedup)
+        worker = SpoolWorker(spool, adapters, dedup, enrichers)
         worker.start()
         log.info("started in spool mode; %s event(s) already pending", spool.pending())
+        if enrichers:
+            log.info("enrichment enabled: %s", ", ".join(e.name for e in enrichers))
     else:
         targets = ", ".join(a.name for a in adapters)
         log.info("started in sync mode; forwarding inline to target(s)=%s", targets)

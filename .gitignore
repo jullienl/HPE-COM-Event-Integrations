@@ -35,7 +35,6 @@ htmlcov/
 
 # Private design/background docs — kept locally, not published
 com-event-relay/docs/Private/
-copilot-ai-gateway
 docs/Private
 
 # Private maintainer guide — kept locally, not published
