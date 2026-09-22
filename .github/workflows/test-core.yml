@@ -1,0 +1,38 @@
+name: Test com-event-core
+
+# Runs the com-event-core unit test suite. Separate from the build-*.yml
+# workflows, which build/push Docker images and never invoke pytest.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "com-event-core/**"
+      - ".github/workflows/test-core.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "com-event-core/**"
+      - ".github/workflows/test-core.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install com-event-core with dev dependencies
+        run: pip install -e "./com-event-core[dev]"
+
+      - name: Run tests
+        run: pytest com-event-core/tests
