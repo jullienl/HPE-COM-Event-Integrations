@@ -20,7 +20,7 @@ It ships as **ready-to-run, multi-architecture container images** published to *
 
 ## At a glance
 
-<img src="docs/images/at-glance-diagram.png" alt="At glance architecture" width="900" />
+<img src="docs/images/at-glance-diagram.png" alt="At glance architecture" width="1000" />
 
 Two deployment models are available:
 
@@ -43,7 +43,7 @@ Both models share the same normalisation, de-duplication, correlation, and targe
 - [Supported integrations](#supported-integrations)
 - [AI-assisted incident investigation and remediation](#ai-assisted-incident-investigation-and-remediation)
 - [When should I use a native COM integration?](#when-should-i-use-a-native-com-integration)
-- [COM event lifecycle](#com-event-lifecycle)
+- [Monitoring resources](#monitoring-resources)
 - [Projects in this repository](#projects-in-this-repository)
 - [Container images](#container-images)
 - [Documentation](#documentation)
@@ -167,13 +167,13 @@ With this model, **no inbound network path is required into the customer environ
 
 The core architecture intentionally separates COM-specific logic from target-specific logic.
 
-<img src="docs/images/how-it-works-diagram.png" alt="At glance architecture" width="900" />
+<img src="docs/images/how-it-works-diagram.png" alt="COM-specific processing separated from target-specific adapters" width="900" />
 
 A new integration generally does **not** require changing the COM webhook receiver.
 
 Instead, a target adapter maps:
 
-<img src="docs/images/target-adapter-map-diagram.png" alt="At glance architecture" width="400" />
+<img src="docs/images/target-adapter-map-diagram.png" alt="CanonicalEvent mapped to a target adapter" width="400" />
 
 
 This keeps the COM contract, de-duplication, correlation, and delivery behavior consistent across adapters.
@@ -339,6 +339,12 @@ This means there is **no inbound connection from COM into the customer network**
 | Public HTTPS endpoint | ✅ you operate | ✅ platform-managed | — |
 | Inbound customer-network path | Required | — | **Not required** |
 
+For the exact count of queues, spools, and dedup stores per component (and
+what changes, or doesn't, when AI enrichment is enabled), see [Durable state:
+queues, spools, and dedup
+stores](com-event-core/README.md#durable-state-queues-spools-and-dedup-stores)
+in `com-event-core`.
+
 ---
 
 # Supported integrations
@@ -405,11 +411,156 @@ Optional, **off by default**, and layered on top of every target adapter above: 
 
 The report keeps **observed facts**, the specific signals found in the data, separate from **hypothesis**: it proposes a likely root cause, assesses its own confidence in that cause, and recommends further diagnostic checks and concrete remediation actions, without presenting an unverified guess as a definitive conclusion. Intelligent, event-driven operations, not just event forwarding.
 
+### How the analysis is built
+
+COM provides the event and the affected server's state transition, but the
+event alone does not contain the full hardware diagnosis. For an eligible
+server raise event, the on-premises shim or bridge uses the iLO address carried
+by the event to collect additional evidence from multiple Redfish resources,
+including overall server health, thermal sensors, power supplies, memory,
+storage and drives. It also reads the Integrated Management Log (IML) and keeps
+the relevant non-OK entries.
+
+The collected evidence is bounded to the most relevant component data and IML
+messages, then sent to the AI analyzer together with the original COM event.
+The analyzer uses this broader hardware context to produce the summary, likely
+root cause, confidence, and recommended actions that are added to the ticket,
+issue, or chat message. This gives the analysis component-level and historical
+evidence that is not available in the COM event by itself.
+
+### Choose an enrichment mode
+
+`ENRICHERS` is configured on the on-premises Shim or Bridge. It is unset by
+default, while `TARGETS` selects the destination adapters. For Bridge
+deployments, enrichment requires `DELIVERY_MODE=spool` with a durable
+`SPOOL_PATH`; enrichment configuration errors fail startup, while per-event
+enrichment failures fail open and do not block delivery.
+
+| Configuration | Prerequisites | Result |
+|---|---|---|
+| Unset or empty | Normal delivery configuration | Delivers the normalized event without advisory, iLO, or AI enrichment. |
+| `hpe_advisories` | `COM_BASE_URL` plus COM client credentials or `COM_PAT` | Resolves firmware-bundle advisories and compliance for eligible server raises; adds advisory fields and matched references. It does not call the AI analyzer or populate `analysis_*`. |
+| `ilo_ai` | `AI_ANALYZER_URL`, iLO credentials, and a reachable event management URL | Collects bounded Redfish evidence and calls the analyzer; adds `analysis_summary`, `analysis_root_cause`, `analysis_confidence`, and `analysis_actions`. |
+| `hpe_advisories,ilo_ai` | All prerequisites above | Adds advisory context and sends it with Redfish evidence to the analyzer. Enricher priority guarantees `hpe_advisories` runs before `ilo_ai`, regardless of the order in the setting. |
+
+Examples:
+
+```bash
+# Baseline delivery; enrichment disabled
+unset ENRICHERS
+
+# Advisory context only; no AI call
+ENRICHERS=hpe_advisories
+
+# AI analysis from Redfish evidence only
+ENRICHERS=ilo_ai
+
+# Advisory context plus AI analysis
+ENRICHERS=hpe_advisories,ilo_ai
+```
+
+**Baseline pipeline**
+
+```mermaid
+flowchart LR
+  A[COM webhook] --> B[Normalize]
+  B --> C[Deliver to configured targets]
+```
+
+**Advisory-only pipeline**
+
+```mermaid
+flowchart LR
+  A[COM webhook] --> B[Normalize]
+  B --> C[hpe_advisories<br/>COM bundle + CA data]
+  C --> D[Attach advisory fields]
+  D --> E[Deliver to configured targets]
+```
+
+**Combined advisory and AI pipeline**
+
+```mermaid
+flowchart LR
+  A[COM webhook] --> B[Normalize]
+  B --> C[hpe_advisories]
+  C --> D[ilo_ai<br/>Redfish + advisory evidence]
+  D --> E[Deliver enriched event to targets]
+```
+
+### What happens when iLO or the analyzer is unavailable?
+
+AI analysis is fail-open and is optional enrichment, not a prerequisite for
+delivery:
+
+- If the iLO is unreachable or the iLO credentials are incorrect, the event is
+  still delivered, but no AI analysis report is produced because the analyzer
+  is not called.
+- If an individual Redfish resource is missing or a component request fails,
+  the remaining evidence can still be sent to the analyzer, so the report may
+  contain less information.
+- If the analyzer itself is unavailable or returns an invalid response, the
+  event is still delivered without AI analysis.
+- If the analyzer returns only some report fields, adapters render only those
+  fields. Missing summary, root-cause, confidence, or recommended-action data
+  is omitted rather than shown as an empty section.
+
+This prevents a BMC outage, incorrect password, or AI-service outage from
+blocking the underlying COM event or turning it into a delivery retry loop.
+
+### Latency, throughput, and backpressure
+
+Enrichment is called **serially, one raise event at a time**, by the same
+single worker thread that already drains the Bridge's spool or the Shim's
+queue, so there is no worker pool or concurrent enrichment. Several mechanisms
+bound how much that costs, and it never blocks the COM webhook response
+itself: `DELIVERY_MODE=spool` already acks COM with `202` before enrichment
+runs, which is why `ENRICHERS` refuses to start with `DELIVERY_MODE=sync`.
+
+- **Gating** skips the analyzer entirely for clears, low-severity events, and
+  events with no `mgmt_url`.
+- **Caching** (`AI_CACHE_TTL_SECONDS`, default 1h) reuses a repeat raise's
+  result instead of calling the analyzer again.
+- **Budget caps** (`AI_MAX_ANALYSES_PER_HOUR` / `AI_MAX_ANALYSES_PER_DAY`) trip
+  a circuit breaker that skips analysis, at near-zero cost, once exhausted.
+- **A per-call timeout** (`AI_TIMEOUT`, default 90s) bounds a hung analyzer
+  instead of blocking the worker forever.
+
+None of this adds a new queue, spool, or dedup store: the cache and budget
+counter above live in memory in the enrichment process and are lost on
+restart, so enabling `ENRICHERS` never changes the queue/spool/dedup counts
+described for the [Relay + Shim](#which-component-does-what) or
+[Bridge](com-event-bridge/README.md) deployment models.
+
+If the analyzer is merely *slow* rather than down, the worker still spends up
+to `AI_TIMEOUT` seconds per raise, so the backlog can drain slower than events
+arrive:
+
+- **Bridge**: the on-disk spool keeps growing, bounded by `SPOOL_MAX_BYTES`
+  (default 50 MB). Once full, new events are rejected (`503`), and since COM
+  never retries a failed delivery, those events are lost. A single bridge has
+  no built-in way to add worker concurrency (one SQLite spool, one writer).
+- **Shim**: messages queue up in the durable cloud queue instead, safely, but
+  consumer lag grows. Running additional shim replicas against the same queue
+  (Service Bus/SQS both support multiple consumers) adds real concurrency here.
+
+Splitting monitored conditions across separate deployments (see
+[Splitting monitors across multiple deployments](#splitting-monitors-across-multiple-deployments))
+also isolates this: a slow analyzer call for one condition then only stalls
+that deployment's worker, not delivery for every other condition.
+
 A ready-to-run analyzer for it, the [AI Gateway](https://github.com/jullienl/ai-gateway) (a separate, standalone repo): it can run on **GitHub Copilot, OpenAI, or Anthropic**, picked per request, so it fits whichever of those you already have rather than requiring a new subscription. Any service that implements the same small HTTP contract works in its place, see [bring your own model](https://github.com/jullienl/ai-gateway#no-github-copilot-license-bring-your-own-model) for a minimal analyzer built on any other provider.
 
-→ **[AI analysis enrichment](com-event-core/README.md#ai-analysis-enrichment)** in `com-event-core` is the full write-up: enabling `ENRICHERS=ilo_ai`, running the gateway, the exact fields it returns, and what shows up in the ticket.
+→ **[AI analysis enrichment](com-event-core/README.md#ai-analysis-enrichment)** in `com-event-core` is the full write-up: enabling `ENRICHERS=ilo_ai` or `ENRICHERS=hpe_advisories,ilo_ai`, running the gateway, the exact fields returned, and what shows up in the ticket.
 
-<img src="docs/images/ai-assisted-investigation-diagram.png" alt="At glance architecture"  />
+<img src="docs/images/ai-assisted-investigation-diagram.png" alt="AI-assisted incident investigation and remediation sequence diagram" />
+
+### Customer Advisories enrichment flow
+
+The CA-aware flow resolves the firmware bundle and advisory data through COM
+before sending the combined event, Redfish, and advisory evidence to the AI
+gateway.
+
+<img src="docs/images/ai-assisted-investigation-with-CAs-diagram.png" alt="AI-assisted incident investigation with Customer Advisories enrichment" />
 
 ### What it looks like
 
@@ -448,9 +599,15 @@ Even for ServiceNow or OpsRamp, Relay + Shim can be useful when the internal end
 
 ---
 
-# COM event lifecycle
+# Monitoring resources
 
-The framework currently normalises server events, alert events, and a generic fallback.
+The framework normalises three COM resource families: server snapshots, alert
+lifecycle events, and a generic fallback for anything else. Servers are the
+richest case: one webhook snapshot can evaluate several independent
+conditions at once, each with its own raise/clear lifecycle, controlled by
+`SERVER_MONITORS`.
+
+## Description
 
 | Resource | Delivered COM `type` | Behavior |
 |---|---|---|
@@ -460,17 +617,102 @@ The framework currently normalises server events, alert events, and a generic fa
 
 ## Server conditions
 
-Server snapshots can evaluate one or more conditions through:
+A COM server webhook delivers the server's **full current state**, not a diff
+of what changed. `SERVER_MONITORS` tells the framework which conditions
+inside that snapshot to turn into raise/clear events:
 
 ```bash
 SERVER_MONITORS=health,power,connection,subscription
 ```
 
-`health` is the default.
+`health` is the default when `SERVER_MONITORS` is unset.
 
-Each condition receives its own correlation identity so, for example, recovery of a power condition cannot accidentally close a health incident for the same server.
+| Condition | Raises when | Clears when | Canonical severity |
+|---|---|---|---|
+| `health` *(default)* | Hardware health summary leaves `OK` | Health summary returns to `OK` | Mapped from COM's own health value |
+| `power` | Server powers off | Server powers back on | `warning` |
+| `connection` | Server disconnects from COM | Server reconnects to COM | `major` |
+| `subscription` | Subscription leaves `SUBSCRIBED`, or expires | Subscription is `SUBSCRIBED` and not expired | `minor` |
 
-## Raise and clear
+### Monitoring more than one condition at a time
+
+Each enabled condition is evaluated independently and gets its own
+correlation identity:
+
+```text
+server:<serial>:health
+server:<serial>:power
+server:<serial>:connection
+server:<serial>:subscription
+```
+
+So, for example, `SERVER_MONITORS=health,power` on one server raises and
+clears a health incident and a power incident independently: recovering
+power never closes a health incident, and vice versa.
+
+Because a server webhook is a full-state snapshot, **every enabled condition
+is re-evaluated on every delivery**, not only the one that actually changed.
+A healthy condition therefore produces a repeated clear candidate on every
+snapshot:
+
+- De-duplication suppresses the repeated no-op clears for **stateful**
+  targets (ServiceNow, Jira, GitHub, and others): they search for an open
+  item to close and silently do nothing when none exists.
+- **Post-only chat adapters** (Slack, Teams) have no such lookup: they
+  simply post. So with `SERVER_MONITORS=health,power`, a snapshot with
+  critical health but healthy power posts both a critical **health** message
+  and a `Resolved` **power** message, on every delivery. This is accurate
+  (power really is healthy), just noisier in chat.
+
+**Recommendation:** enable only the conditions you actually want alerts on,
+rather than all four by default.
+
+### Splitting monitors across multiple deployments
+
+Running one shim/bridge deployment **per monitored condition**, instead of
+one deployment with `SERVER_MONITORS=health,power,connection,subscription`,
+is a supported pattern. It does not, by itself, reduce total message volume
+(see above); it's worth it when you want:
+
+- **Per-condition target routing.** `TARGETS` and every adapter's
+  configuration (`SLACK_WEBHOOK_URL`, `GITHUB_REPO`, and so on) apply
+  uniformly to every condition a deployment evaluates, and adapters read
+  fixed global environment variables, so one process cannot send `health` to
+  one Slack channel and `power` to another (see [Current
+  limitations](com-event-core/README.md#current-limitations)). Two
+  deployments, each with its own `SERVER_MONITORS` and adapter config, can.
+- **No cross-condition noise in a shared channel.** If each deployment only
+  enables the conditions it should alert on, a post-only chat adapter (Slack,
+  Teams) never posts a `Resolved` message for a condition nobody asked that
+  channel about.
+- **Isolating AI-enrichment latency.** Enrichment runs serially on a single
+  worker thread per deployment; a slow analyzer call triggered by one
+  condition can delay delivery for every other condition sharing that
+  process. Separate deployments isolate that blast radius, see [Latency,
+  throughput, and
+  concurrency](com-event-core/README.md#latency-throughput-and-concurrency)
+  in `com-event-core`.
+- **Independent failure domains.** A stuck target, a full spool, or an
+  exhausted AI budget for one condition's deployment doesn't affect another.
+
+**What it costs:** each split-out deployment needs its own pair of COM
+webhook subscriptions (raise + clear) for that transition, its own
+container/process, and its own secrets, adding more moving parts to deploy
+and monitor than one deployment with several conditions enabled. For
+**Relay + Shim**, each split deployment also needs its **own queue**: a
+queue is drained by competing consumers, so pointing two differently
+configured shims at the *same* queue means each message is delivered to only
+one of them, silently dropping whichever condition that shim doesn't
+monitor. See [Multiple Shim consumers](com-event-relay/README.md#multiple-shim-consumers)
+for the underlying constraint. The **Bridge**'s spool is already local to
+each process, so this doesn't apply there.
+
+**When one deployment is enough:** every monitored condition should go to
+the same target(s) and you don't need to isolate AI-enrichment latency.
+Enabling only the conditions you care about (see above) already removes the
+chat-noise problem without splitting anything.
+
+## COM event lifecycle
 
 For lifecycle-aware integrations, configure COM to send both:
 
@@ -540,6 +782,7 @@ Each flow covers the public receiver, COM webhooks, raise/clear behavior, and ta
 - [`com-event-relay/README.md`](com-event-relay/README.md): relay/shim architecture and configuration
 - [`com-event-bridge/README.md`](com-event-bridge/README.md): bridge configuration and deployment
 - [`com-event-bridge/HARDENING.md`](com-event-bridge/HARDENING.md): on-prem hardening guidance
+- [`AI Gateway`](https://github.com/jullienl/ai-gateway) (separate repo): the ready-to-run analyzer behind `ENRICHERS=ilo_ai` — only needed when [AI-assisted incident investigation](#ai-assisted-incident-investigation-and-remediation) is enabled
 
 ---
 
@@ -550,11 +793,14 @@ Planned or candidate improvements include:
 - **Async post-creation AI analysis**  
   Deliver the ticket immediately, run the [AI analysis](com-event-core/README.md#ai-analysis-enrichment) out-of-band, then append it to the already-created item (a comment on the GitHub/Jira issue, a thread reply in Slack/Teams). Removes analysis latency from the delivery path entirely. Needs an `update(event)` addition to the adapter contract for stateful targets.
 
-- **AI analysis for alert-sourced events**  
-  COM alert webhooks do not carry the server's iLO address, so alert events are currently delivered without analysis. Resolving serial number → iLO address would extend analysis to them.
+- **Concurrent AI enrichment**  
+  `ENRICHERS` currently runs serially, one raise event at a time, on the same worker thread that drains the Bridge's spool or the Shim's queue (see [Latency, throughput, and concurrency](com-event-core/README.md#latency-throughput-and-concurrency)). A worker pool for enrichment would let a slow analyzer call delay only its own event, without needing to split conditions across separate deployments.
 
 - **Multiple instances of the same adapter type**  
   Add per-instance configuration namespaces so two webhooks, two Slack targets, or two instances of another adapter can coexist.
+
+- **Shared de-duplication backend for horizontal Shim scaling**  
+  The Shim's dedup store is local SQLite, so running several Shim instances against the same queue (see [Multiple Shim consumers](com-event-relay/README.md#multiple-shim-consumers)) can reduce duplicate-suppression consistency. Moving dedup state to a shared backend would make multi-consumer Shim scaling safe.
 
 - **Additional live-tenant validation**  
   Exercise more built-in adapters end-to-end against real target environments.

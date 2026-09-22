@@ -31,6 +31,7 @@ It contains the COM event normalisation, `CanonicalEvent` model, de-duplication,
 - [Server conditions](#server-conditions)
 - [CanonicalEvent](#canonicalevent)
 - [Correlation and de-duplication](#correlation-and-de-duplication)
+- [Durable state: queues, spools, and dedup stores](#durable-state-queues-spools-and-dedup-stores)
 - [Delivering to multiple targets](#delivering-to-multiple-targets)
 - [Supported adapters](#supported-adapters)
   - [Adapter reference table](#adapter-reference-table)
@@ -452,6 +453,56 @@ Because server webhooks are snapshots, a healthy condition can generate repeated
 > chat. **Scope `SERVER_MONITORS` to only the conditions you want alerts on** —
 > e.g. `SERVER_MONITORS=health` if you only care about hardware health.
 
+## Splitting monitors across multiple deployments
+
+Nothing in `normalize()`, `deliver()`, or de-duplication requires all enabled
+`SERVER_MONITORS` conditions to live in the same process: each condition's
+correlation key (`server:<serial>:<condition>`) and dedup key are already
+fully independent. Running one shim/bridge deployment per condition is a
+supported pattern, not a workaround.
+
+**Why you would:**
+
+- **Per-condition target routing.** Adapters read fixed global environment
+  variables (`SLACK_WEBHOOK_URL`, `GITHUB_REPO`, ...), so one process cannot
+  run two instances of the same adapter type with different destinations
+  (see [Current limitations](#current-limitations)). Splitting
+  `SERVER_MONITORS` across deployments, each with its own `TARGETS` and
+  adapter configuration, is the way to send `health` events to one
+  destination and `power` events to another today, without waiting on
+  namespaced adapter configuration.
+- **No cross-condition noise on a shared post-only target.** Enabling only
+  the condition(s) a given deployment should alert on means a `Resolved`
+  message never appears for a healthy condition nobody asked that deployment
+  about (see the callout above).
+- **Isolating AI-enrichment latency.** `enrich_events()` runs serially on a
+  single worker thread per deployment (the bridge's `SpoolWorker`, or the
+  shim's consume loop). A slow analyzer call triggered by a `power` raise
+  delays delivery for every other condition queued behind it in that same
+  process. Splitting conditions into separate deployments confines a stuck
+  analysis to its own deployment. See [Latency, throughput, and
+  concurrency](#latency-throughput-and-concurrency) for the full mechanics.
+- **Independent failure domains.** A full spool, an exhausted AI budget, or a
+  down target for one condition's deployment doesn't affect another
+  condition's deployment.
+
+**What it costs:** each deployment needs its own pair of COM webhook
+subscriptions (raise + clear) for the transition it monitors, its own
+container/process, its own dedup store, and its own secrets, adding more
+moving parts than a single deployment with several conditions enabled. For
+**Relay + Shim**, each split deployment also needs its **own queue**: a
+queue is drained by competing consumers, so two differently configured
+shims sharing one queue would each only see some of the messages, silently
+dropping whichever condition that particular shim isn't monitoring. See
+[Multiple Shim consumers](../com-event-relay/README.md#multiple-shim-consumers)
+for the underlying constraint.
+
+**When not to split:** if every monitored condition should go to the same
+target(s) and AI-enrichment latency isolation isn't a concern, one deployment
+with `SERVER_MONITORS=health,power,...` is simpler and delivers identically.
+Splitting does not reduce total event volume, only where it lands and how it
+is isolated.
+
 ---
 
 # CanonicalEvent
@@ -530,6 +581,37 @@ correlation_key + action + severity
 ```
 
 This means a raise and its clear are never collapsed together, while repeated copies of the same event can still be suppressed.
+
+---
+
+# Durable state: queues, spools, and dedup stores
+
+Each deployment model uses a different combination of durable stores. None of
+them are shared across processes; every queue, spool, and dedup store below
+belongs to exactly one consumer.
+
+| Component | Queue | Spool | Dedup store |
+|---|---|---|---|
+| **Relay** | 1 durable queue (`QUEUE_NAME` on Service Bus, or 1 SQS queue URL), shared by every event regardless of `TARGETS` or `SERVER_MONITORS` | none | none (never parses the payload) |
+| **Shim** | consumes that same 1 queue | none | 1 SQLite dedup store |
+| **Bridge**, `DELIVERY_MODE=spool` | none | 1 on-disk SQLite spool | 1 SQLite dedup store |
+| **Bridge**, `DELIVERY_MODE=sync` | none | none (never created) | 1 SQLite dedup store |
+
+A few consequences worth calling out:
+
+- **Enrichment (`ENRICHERS`) adds none of these.** `ilo_ai`'s cache and budget
+  counter are plain in-memory objects in the enrichment process, lost on
+  restart, so enabling AI analysis never changes the counts above.
+- **The Relay+Shim queue is a plain queue, not a topic.** It is drained by
+  competing consumers, so two shims consuming the same queue split the
+  traffic between them rather than each seeing every message. See [Multiple
+  Shim consumers](../com-event-relay/README.md#multiple-shim-consumers) for
+  what that means for horizontal scaling, and [Splitting monitors across
+  multiple deployments](#splitting-monitors-across-multiple-deployments) for
+  why that also means a split-by-condition deployment needs its own queue.
+- **A single bridge process owns one spool file and one drain thread**, so it
+  has no built-in way to add worker concurrency; see [Latency, throughput,
+  and concurrency](#latency-throughput-and-concurrency).
 
 ---
 
@@ -792,6 +874,11 @@ supplied data and say so plainly when data is missing. See
 
 ## Enable it with `ENRICHERS`, not `TARGETS`
 
+The CA-aware flow resolves firmware-bundle advisory evidence through COM and
+passes it to the analyzer alongside Redfish evidence:
+
+<img src="../docs/images/ai-assisted-investigation-with-CAs-diagram.png" alt="AI-assisted incident investigation with Customer Advisories enrichment" />
+
 Enrichment and delivery are selected separately:
 
 ```bash
@@ -869,6 +956,13 @@ The shim or bridge takes `AI_ANALYZER_URL` as a **base** URL and appends
   "session_id": "<correlation key, so repeat analyses of one problem thread together>"
 }
 ```
+
+When `ENRICHERS` also runs `hpe_advisories` (run order versus `ilo_ai` is
+guaranteed by each enricher's `priority`, not by how `ENRICHERS` is written),
+the body also carries `input.advisories`: `{"bundle": {...}, "open": [...],
+"resolved": [...], "compliance": {...} | null}`, the same shape
+`hpe_advisories` attaches to `advisory_evidence`. Absent otherwise, so this is a
+strict addition — nothing about the existing `event`/`redfish` payload changes.
 
 and expects HTTP `200` with:
 
@@ -1176,19 +1270,304 @@ Analysis is an enhancement, so no analyzer problem can delay or lose an event.
 > it. The bridge **refuses to start** with `ENRICHERS` set and
 > `DELIVERY_MODE=sync`. Use `spool` (the bridge default) or the relay + queue.
 
-## Alert events are not analysed
+## Latency, throughput, and concurrency
 
-Analysis needs a BMC address, and COM alert payloads do not carry one — only
-server events do. Alert-sourced events are delivered normally, with one line in
-the log:
+`enrich_events()` is called **synchronously, inline, one event at a time**, by
+the same single worker that already drains delivery for that consumer:
+
+- **Bridge** (`spool` mode): the background `SpoolWorker` thread claims one
+  spool row, enriches it, delivers it, then claims the next. There is exactly
+  one such thread per bridge process.
+- **Shim**: `worker.py`'s `for msg in consumer.receive():` loop does the same,
+  one queue message at a time.
+
+Neither consumer runs a worker pool or parallel enrichment. This is
+deliberate: `enrich_events()` mutates a small, per-event list of
+`CanonicalEvent` objects with no shared state across events, so correctness
+never depended on concurrency, but it does mean **one slow analyzer call
+delays every event behind it** in that process.
+
+### Why this doesn't block the COM webhook response
+
+Enrichment runs strictly *after* the event is already durably captured:
+
+- **Bridge**: `DELIVERY_MODE=spool` persists the raw event to the on-disk
+  spool and returns `202` to COM before the `SpoolWorker` ever picks it up.
+  This is exactly why enrichment is refused outright with
+  `DELIVERY_MODE=sync`: that mode forwards inline while COM is still waiting,
+  and COM does not retry a timed-out request.
+- **Shim**: the event was already durably enqueued by the relay; the shim
+  consuming it slowly only affects its own consumer lag, never COM's original
+  request.
+
+### What bounds a slow or unresponsive analyzer
+
+| Mechanism | Effect |
+|---|---|
+| `wants()` gating | Skips the analyzer call entirely for clears, sub-threshold severity, and events with no `mgmt_url`, so most events never reach the network call |
+| `_Cache` (per `correlation_key`, `AI_CACHE_TTL_SECONDS`) | A repeat raise of the same problem reuses the cached result instead of making a new call |
+| `_Budget` circuit breaker (`AI_MAX_ANALYSES_PER_HOUR` / `AI_MAX_ANALYSES_PER_DAY`) | Once tripped, `enrich()` returns immediately without calling the analyzer, at near-zero cost, until the window rolls over |
+| `AI_TIMEOUT` (default `90`) | Bounds the outbound HTTP call itself: a hung analyzer fails after this many seconds rather than blocking the worker forever |
+| `enrich_events()`'s try/except (never raises) | Any exception, including a timeout, is caught and logged; the event proceeds to delivery unenriched |
+
+None of these add concurrency: they only bound how often, and for how long,
+the single worker can be stuck waiting on the analyzer. None of them add a
+new queue, spool, or dedup store either: `_Cache` and `_Budget` are plain
+in-memory objects local to the enrichment process, lost on restart, so
+enabling `ENRICHERS` never changes the queue/spool/dedup counts for the
+consumer it runs in.
+
+### What happens to the backlog while that worker is stuck
+
+If the analyzer is slow rather than fully down, the worker still spends up to
+`AI_TIMEOUT` seconds per raise event, so the backlog can grow faster than it
+drains:
+
+- **Bridge**: the spool (a single SQLite file, single writer) keeps
+  accumulating, bounded by `SPOOL_MAX_BYTES` (default 50 MB in
+  `com-event-bridge/bridge/core/spool.py`). Once full, `SpoolStore.put()`
+  raises `SpoolFull`, the HTTP handler returns `503`, and since COM never
+  retries a failed webhook delivery, that specific event is lost, not
+  because *delivery* failed, but because the backlog couldn't drain fast
+  enough to make room for it. A single bridge process has no built-in way to
+  add worker concurrency: there is one spool file and one drain thread.
+- **Shim**: messages simply accumulate in the durable cloud queue (Azure
+  Service Bus or AWS SQS) instead, safely, with no size cap of this kind, but
+  with growing consumer lag. Both queue backends support multiple concurrent
+  consumers, so running additional shim replicas against the same queue *does*
+  add real concurrency here, unlike the bridge.
+
+### Isolating the blast radius
+
+Because enrichment shares its process and worker thread with delivery for
+*every* condition that deployment monitors, a slow analyzer call triggered by
+one `SERVER_MONITORS` condition (say, `power`) delays delivery for every other
+condition (`health`, `connection`, `subscription`) queued behind it in the same
+process. Running one shim/bridge deployment per monitored condition, each
+with its own worker, its own spool or queue, and its own `TARGETS`, isolates
+this: a stuck analysis for one condition only stalls that deployment, not the
+others. See [Splitting monitors across multiple
+deployments](#splitting-monitors-across-multiple-deployments) for the routing
+side of that same trade-off.
+
+## Alert events
+
+An alert payload never carries a BMC address directly (verified against a
+real `GET /v1/alerts` response, 2026-09) — only `device.resourceUri` (a
+relative path like `/compute-ops-mgmt/v1/servers/<id>`) or `device.id`. For a
+raise alert, `ilo_ai` resolves `mgmt_url` by fetching that server resource's
+`hardware.bmc.ip` through the COM API, the same client already used by
+`hpe_advisories`, then proceeds exactly like a server event. The resolved
+address is cached per device id (`ILO_ALERT_MGMT_URL_CACHE_TTL_SECONDS`,
+default 24h), since a BMC address effectively never changes.
+
+This needs `COM_BASE_URL` plus COM client credentials or `COM_PAT`, the same
+prerequisites as `hpe_advisories`, even when `hpe_advisories` itself isn't
+enabled. Without them, or when the lookup fails, this is a skip, not an
+error: the event is delivered normally, with one line in the log:
 
 ```text
 no mgmt_url on event <id> (source_type=alert); skipping AI analysis
 ```
 
-This is a skip, not an error: nothing is retried, delayed, or lost. Extending
-analysis to alerts would require a serial-to-iLO-address lookup, which is not
-currently in scope.
+Clears are never resolved or analysed (see [What gets analysed, and what it
+costs](#what-gets-analysed-and-what-it-costs)), so a cleared alert costs
+nothing extra.
+
+## The `hpe_advisories` enricher
+
+A second, independent enrichment stage attaches **HPE Customer Advisory (CA)**
+context from the server's currently-installed firmware bundle — known issues
+not yet fixed (**Open CAs**) and issues this bundle already fixes
+(**Resolved CAs**) — so a ticket or an AI analysis can say "this looks like a
+known firmware issue" instead of starting from nothing.
+
+The supported API boundary is COM itself: a server's `firmwareBundleUri` (on
+the webhook payload, or resolved via a narrow `GET /servers/{id}` call), then
+`GET /compute-ops-mgmt/v1/firmware-bundles/{id}`, whose `advisories` field is a
+URL into an HPE SPP/support document. That document is content referenced by
+the API, not a stable JSON API in its own right — see
+[Parsing limitations](#parsing-limitations) below.
+
+```bash
+ENRICHERS=hpe_advisories,ilo_ai
+```
+
+`ilo_ai` reads `hpe_advisories`' evidence into its analyzer payload when both
+are enabled. That dependency is enforced by the framework, not by how you write
+this line: each enricher declares a `priority`, and `get_enrichers()` sorts by
+it (not by ENRICHERS' string order) — so `ENRICHERS=ilo_ai,hpe_advisories` runs
+in the identical, correct order. Listing them in dependency order here is
+purely for readability.
+
+Like `ilo_ai`, it only ever adds an optional section — enrichment failures are
+logged and the event is delivered unenriched.
+
+### Configuration
+
+```bash
+ENRICHERS=hpe_advisories,ilo_ai
+
+COM_BASE_URL=https://<COM-API-base-URL>   # e.g. https://eu-central.api.greenlake.hpe.com
+
+# Preferred for a long-running shim/bridge: client credentials, auto-refreshed.
+COM_CLIENT_ID=...
+COM_CLIENT_SECRET_FILE=/run/secrets/com_client_secret   # or COM_CLIENT_SECRET for local dev
+
+# Alternative: a static Personal Access Token (simpler for a one-off manual
+# test, but expires in ~2h with nothing to refresh it — expect 401s after that).
+# COM_PAT_FILE=/run/secrets/com_pat                     # or COM_PAT for local dev
+```
+
+Optional settings:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `COM_SSO_TOKEN_URL` | `https://sso.common.cloud.hpe.com/as/token.oauth2` | GreenLake SSO token endpoint for the client_credentials exchange |
+| `COM_TENANT_ACID` | — | MSP tenant selector, sent as a header (adjust the header name in [com_client.py](com_event_core/com_client.py) if your GreenLake gateway expects a different one) |
+| `COM_TIMEOUT` | `15` | Seconds to wait for a COM API call |
+| `HPE_ADVISORIES_MIN_SEVERITY` | `warning` | Severity floor for looking up advisories |
+| `HPE_ADVISORIES_CACHE_TTL_SECONDS` | `86400` (24h) | How long a bundle's advisories (and a device's group-compliance record) are reused before re-fetching |
+| `HPE_ADVISORIES_TIMEOUT` | `20` | Seconds to wait for the advisory document fetch |
+| `HPE_ADVISORIES_CHECK_COMPLIANCE` | `true` | Also resolve the device's COM group firmware-compliance record (see below); set `false` to skip the extra COM calls |
+
+Two auth options, tried in this order: **client credentials**
+(`COM_CLIENT_ID` + `COM_CLIENT_SECRET`/`COM_CLIENT_SECRET_FILE`) — a GreenLake
+service client's id/secret exchanged for a ~2h access token at
+`COM_SSO_TOKEN_URL`, cached in-process and transparently refreshed shortly
+before it expires — or a **static PAT** (`COM_PAT`/`COM_PAT_FILE`), which also
+expires in ~2h but has no refresh mechanism of its own, so it is only suitable
+for a manual/short-lived test. A `401`/`403` from the COM API means the
+credential is missing, expired, or not scoped for the tenant the event belongs
+to; the error message names this explicitly rather than just the status code.
+
+### What gets resolved, and how
+
+1. **Bundle reference**, in order: the webhook payload's own
+   `firmwareBundleUri`, then `lastFirmwareUpdate.attemptedBaselineUri`, then —
+   only if `COM_BASE_URL`/`COM_PAT` are configured — a narrow
+   `GET /servers/{id}?select=firmwareBundleUri,lastFirmwareUpdate,`
+   `firmwareInventory,hardware,serverGeneration` lookup. A deployment with
+   neither the payload fields nor COM API access simply skips this enricher
+   for every event — a normal, logged skip, not an error.
+2. **Bundle metadata + advisories link**, via
+   `GET /compute-ops-mgmt/v1/firmware-bundles/{id}` — `displayName`,
+   `releaseVersion`, `releaseDate`, `bundleGeneration`, `supportUrl`, and the
+   `advisories` URL.
+3. **Open/Resolved CA lists**, by fetching *only* that `advisories` URL (never
+   a broad HPE Support Center search) and parsing its two sections.
+4. **Caching by bundle reference**, not by event id — many servers in a fleet
+   share one firmware bundle, so the advisory document is fetched at most once
+   per `HPE_ADVISORIES_CACHE_TTL_SECONDS` (default 24h) regardless of how many
+   servers/events reference it.
+5. **Two outputs** land on the event:
+   - `advisory_evidence` — the *full* Open/Resolved lists plus bundle
+     metadata, included in the `ilo_ai` analyzer payload's `advisories` field
+     whenever both enrichers are enabled (run order is guaranteed by
+     `priority`, not by how `ENRICHERS` is written — see above).
+   - `advisory_references` — a small, conservatively keyword-matched subset
+     judged relevant to *this* event, rendered as an **"HPE Customer
+     Advisories"** section by the webhook, Slack, Teams, Jira, GitHub, and
+     Elastic adapters. Matching only ever narrows: a CA is included only when
+     its title/component text shares a real word with the event's own
+     title/description/category, never by default.
+
+### A bundle reference is not proof it was applied
+
+A device's own `firmwareBundleUri`/`lastFirmwareUpdate` only reflect a direct,
+one-off "update firmware" action — they say nothing about a **COM group**
+firmware baseline assigned to the device separately, which can be a different
+(often newer) bundle the device has not actually been updated to yet. So
+"resolved" CAs from the bundle in `advisory_evidence` are not necessarily fixed
+on *this* device.
+
+When `HPE_ADVISORIES_CHECK_COMPLIANCE` is enabled (the default), the enricher
+also resolves the device's COM group (by paging `GET /groups` and matching its
+`devices` list — there is no reverse "which group is this device in" lookup)
+and fetches that group's `GET /groups/{id}/compliance` record for it, adding a
+`compliance` field to `advisory_evidence`:
+
+```json
+{
+  "group_id": "…", "group_name": "…",
+  "group_firmware_status": "Not Compliant",
+  "assigned_bundle_id": "…",
+  "compliance_state": "Not Compliant",
+  "score": 56,
+  "deviations": [
+    {"category": "BIOS", "component": "System ROM",
+     "expected_version": "v2.60", "installed_version": "v2.50"}
+  ]
+}
+```
+
+`compliance` is `null` when the device isn't in a group, the group has no
+compliance record for it, or `HPE_ADVISORIES_CHECK_COMPLIANCE=false` — all
+normal, fail-open outcomes. The `com-rca` prompt is instructed to only treat a
+"resolved" CA as confirmed-fixed when `compliance` shows this device compliant
+with the *same* bundle id used for the advisory lookup; otherwise it is framed
+as "would fix it, not confirmed applied".
+
+> **Verified against a live GreenLake account (2026-09):** a real device's own
+> `firmwareBundleUri` pointed at one bundle while `GET /groups/{id}/compliance`
+> reported that same device `"Not Compliant"` (score 56) against a
+> **different** `assigned_bundle_id` — i.e. the group had a newer baseline
+> assigned than what the device's own fields showed, exactly the scenario this
+> section exists to catch. The four `deviations` returned were genuine
+> component-level version mismatches (BIOS, a storage controller, a NIC, SPS
+> firmware), not synthetic test data.
+
+### Parsing limitations
+
+The advisories page itself is an Angular SPA — a plain HTTP GET on it returns
+only an empty app shell (`<div id="root">`), with no Open/Resolved CA content
+in the static response. `hpe_advisories` doesn't need to render that page,
+though: verified live (2026-09, via browser devtools), the SPA itself fetches
+a same-origin **static JSON asset** to populate its Open/Resolved CA tables —
+sibling to the page URL, e.g.:
+
+```text
+.../spp/index.aspx?version=gen10.2025.11.00.00
+.../spp/assets/gen10.2025.11.00.00.json
+```
+
+`fetch_advisories_json()` derives that asset URL from the advisories URL's own
+`version` query parameter and reads it directly — no JS engine, no headless
+browser, no page render needed. It is used first; the static HTML heading
+parse (`parse_advisories_html()`) is kept only as a fallback safety net for
+the (currently unseen) case where the asset can't be derived or doesn't have
+the expected shape.
+
+> **This is an undocumented, unversioned static asset path — not a published
+> API.** It could move or change shape without notice, so it is used as a
+> best-effort optimisation, never assumed stable: any failure (network error,
+> missing `Advisories` key, unexpected structure) falls straight through to the
+> HTML parse, which itself fails open to "no advisories" rather than raising.
+> Both paths together were verified live end-to-end (2026-09) against a real
+> bundle (`gen10.2025.11.00.00`): **8 Open CAs and 6 Resolved CAs** extracted
+> correctly, matching what the rendered page itself showed in a browser.
+
+If HPE changes the page structure enough to break **both** paths, this is the
+log line to watch for:
+
+```text
+advisory page has neither an 'Open Customer Advisories' nor a 'Resolved
+Customer Advisories' heading; page structure may have changed. Treating as no
+advisories.
+```
+
+### Running the tests
+
+```bash
+pip install -e ".[dev]"
+pytest com-event-core/tests
+```
+
+[tests/test_hpe_advisories.py](tests/test_hpe_advisories.py) covers bundle-ref
+extraction (payload fields vs. COM fallback vs. neither), the firmware-bundle
+client against mocked COM responses, HTML parsing against a fixture page,
+fail-open behaviour on COM `401`/lookup failure/page-fetch failure, the
+keyword-matching heuristic, analyzer-payload formation, and adapter rendering.
 
 ## The shared iLO credential
 
@@ -1217,6 +1596,34 @@ access to every server. In value order:
 **Privacy.** iLO telemetry (serials, hostnames, IPs, IML text) leaving the
 customer network to a hosted model is a real enterprise review item. The
 self-hosted analyzer backend is the answer where that matters.
+
+## The COM credential (client secret / PAT)
+
+`hpe_advisories` reads from the COM API with account-wide reach — servers,
+firmware bundles, and groups/compliance across the whole GreenLake tenant, not
+one server's BMC — so a leaked credential here has a *larger* blast radius
+than the per-fleet iLO account above, even though `ComClient` itself only ever
+issues `GET`s. In value order:
+
+- **Least privilege** — if your GreenLake workspace supports scoping a service
+  client's role, grant it the narrowest one that can read
+  servers/firmware-bundles/groups and nothing else (no write, no billing, no
+  user/identity administration). `ComClient` never calls a write endpoint, but
+  a stolen credential's real-world reach is whatever role GreenLake granted it,
+  not what this code happens to use.
+- **Prefer client credentials over a PAT for anything long-running** — beyond
+  the operational reason (a PAT expires in ~2h with no refresh; see
+  [Configuration](#configuration) above), a service client's secret can be
+  rotated and revoked independently of any one person's account, and doesn't
+  ride along with a human user's own access if that account is later
+  deprovisioned.
+- **File-first secret** — `COM_CLIENT_SECRET_FILE` / `COM_PAT_FILE` via
+  `get_secret()`, same reasoning as every other credential in this project:
+  it doesn't leak through `docker inspect` or `/proc/<pid>/environ`.
+- **Rotation** — have a story for rolling the service client's secret (or
+  reissuing the PAT) before you need to under incident pressure. A `401`
+  reading `"Signature has expired"` from a previously-working PAT means
+  exactly that — normal expiry, not a scope/config bug.
 
 ---
 

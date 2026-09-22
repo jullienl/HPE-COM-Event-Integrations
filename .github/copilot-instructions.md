@@ -148,6 +148,115 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   omitted dict field, a joined string) that reveals the target's real
   constraint — don't assume a JSON-looking target accepts arbitrary nesting.
 
+## HPE Customer Advisories (`hpe_advisories` enricher) — API boundary + ordering (critical)
+
+- **The supported entry point is the COM API, never a scraped HPE Support
+  Center search.** Server `firmwareBundleUri` (payload, or a narrow
+  `GET /servers/{id}` fallback) → `GET /firmware-bundles/{id}` → that bundle's
+  own `advisories` URL is the only advisory document ever fetched. There is no
+  separate, stable Customer Advisory REST API — the document behind
+  `advisories` is HTML meant for humans, so parse it defensively (see below),
+  not as a versioned contract.
+- **Authenticate COM calls with client credentials, not a hand-issued PAT, for
+  anything long-running.** `ComClient` tries `COM_CLIENT_ID` +
+  `COM_CLIENT_SECRET`/`COM_CLIENT_SECRET_FILE` first — exchanged for a Bearer
+  token via `POST https://sso.common.cloud.hpe.com/as/token.oauth2`
+  (`grant_type=client_credentials`, form-encoded, not JSON), cached
+  process-wide and refreshed ~60s before its `expires_in` (a verified real
+  token: `expires_in: 7199`, i.e. ~2h) — before falling back to a static
+  `COM_PAT`/`COM_PAT_FILE` (via `get_secret`, never `os.environ["COM_PAT"]`
+  directly). A manually-issued PAT expires in the same ~2h with **no** refresh
+  of its own, so it is fine for a short manual test but wrong for a
+  shim/bridge that must keep running — use client credentials there. A `401`
+  body reading `"Signature has expired"` from a *previously working* PAT means
+  exactly this expiry, not a scope/config bug. A `401`/`403` in general means
+  an expired/unscoped credential, not a code bug; the error message says so.
+- **Enricher run order is decided by `Enricher.priority`, never by the
+  `ENRICHERS` string.** `hpe_advisories` (`priority=10`) must run before
+  `ilo_ai` (`priority=50`) so `event.advisory_evidence` is already set by the
+  time `ilo_ai` builds the analyzer payload and includes it under
+  `input.advisories`. `get_enrichers()` sorts the instantiated list by
+  `priority` (stable sort, so equal-priority ties keep `ENRICHERS`' order) —
+  so `ENRICHERS=ilo_ai,hpe_advisories` and `ENRICHERS=hpe_advisories,ilo_ai`
+  run identically. This was a real bug class (an operator writing the "wrong"
+  order silently dropped advisory context, no error) fixed by making
+  correctness a framework property instead of a documentation convention. Any
+  new enricher with an ordering dependency must set `priority` accordingly —
+  never rely on config-order alone.
+- **Two outputs, two purposes — don't collapse them into one field.**
+  `advisory_evidence` (full Open/Resolved lists + bundle metadata) feeds the
+  analyzer only; `advisory_references` (a small, keyword-matched subset) is
+  what adapters render in a ticket. A misleading CA in a ticket is worse than
+  none, so matching only ever narrows — never render the full unmatched list.
+- **Cache by resolved bundle reference, not by event id.** Many servers in a
+  fleet share one firmware bundle and the advisory document changes rarely
+  (default TTL 24h) — re-fetching it per event is pure waste, same reasoning as
+  `ilo_ai`'s per-`correlation_key` analysis cache.
+- **Fail open, same contract as every other enricher.** A missing bundle
+  reference, a COM API error, or a page that fails to parse must all end in
+  "deliver the event unenriched", never a raised delivery failure.
+- **Parser durability: no matching heading is a skip, not a best guess.** If
+  neither an "Open Customer Advisories" nor a "Resolved Customer Advisories"
+  heading is found, treat the result as empty (`parsed_ok: False`, logged) —
+  never emit a partial or misaligned extraction from markup that doesn't match
+  what the parser expects.
+- **The advisories page renders via JS, but its data doesn't need to — the SPA
+  itself fetches a static, same-origin JSON asset, verified live (2026-09).**
+  A real firmware bundle's `advisories` URL
+  (`support.hpe.com/.../a00sppdocen_US/spp/index.aspx?version=<v>`) returns
+  only an empty Angular app shell to a static GET; browser devtools (Network →
+  Fetch/XHR) showed the app itself loads `.../spp/assets/<v>.json` — a sibling
+  static file with a clean `Advisories.OpendCAs`/`Advisories.ResolvedCAs`
+  array (`CA`, `Description`, `CALink`, `FixedSPPVersion`, `Date`). `advisories.py`
+  derives that URL from the page URL's own `version` param and reads it
+  directly (`fetch_advisories_json()`) — no JS engine, no headless browser.
+  Verified end-to-end against a real bundle: 8 Open + 6 Resolved CAs extracted
+  correctly. **This is still an undocumented, unversioned asset path, not a
+  published API** — treat it as a best-effort optimisation only: any failure
+  (network error, missing key, reshaped body) must fall through to the static
+  HTML heading parse (`parse_advisories_html()`, which itself fails open to
+  "no advisories" on real pages, kept as the safety net), never raise or block
+  delivery. Don't scrape a *different*, broader HPE endpoint on the strength
+  of this precedent — this is still narrowly "the one static asset the
+  official advisories URL itself already loads," not a general license to
+  reverse-engineer HPE's backend.
+- **A server's own `firmwareBundleUri` is a bundle it was directly, once
+  UPDATED to — not necessarily the bundle its COM GROUP currently assigns, and
+  a "resolved" CA is only proven fixed when those agree.** A COM group can
+  have a firmware baseline assigned without every member being compliant with
+  it (never updated, partial/failed update, drift since). Verified live: a
+  real device had `firmwareBundleUri` pointing at one bundle while its group's
+  `groupCompliance.firmware.status` was `"Not Compliant"` against a
+  **different, newer** `bundleId` from `GET /groups/{id}/compliance` — i.e. the
+  two signals disagreed on a real device, not a hypothetical. There is no
+  reverse "which group is this device in" lookup (`filter=devices/any(...)`
+  returns `400`); resolve it by paging `GET /groups` and matching each group's
+  own `devices` array, bounded (`max_groups`) since this is O(groups) per
+  un-cached device, not O(servers). Cache the compliance result per **device**
+  id, separately from the per-**bundle** advisories cache — two devices can
+  share a bundle but never share a compliance record. Feed `compliance` into
+  the analyzer as evidence (`HPE_ADVISORIES_CHECK_COMPLIANCE`, default on) —
+  don't reclassify "resolved" to "open" in code; let the prompt reason about
+  whether the compliant bundle id matches the one the advisories came from.
+- **A raw COM resource reference can OMIT the service-mount segment that the
+  same resource's own `resourceUri` includes — never trust a `firmwareBundleUri`
+  path verbatim.** Verified live: a server's `firmwareBundleUri` /
+  `lastFirmwareUpdate.attemptedBaselineUri` read `/v1/firmware-bundles/<id>`
+  (no `/compute-ops-mgmt` prefix) and 404s (`HPE_GL_ERROR_NOT_FOUND`) if GETed
+  as-is; the *same* bundle's own `resourceUri` field (once fetched) reads
+  `/compute-ops-mgmt/v1/firmware-bundles/<id>` and is what actually resolves.
+  `ComClient.get_firmware_bundle()` patches this: a root-relative path missing
+  `/compute-ops-mgmt/` gets it prepended before the GET. General rule: a
+  "relative URI" field from a vendor API is not guaranteed rooted the same way
+  every time — verify one live, don't assume symmetry with paths you already
+  call correctly elsewhere.
+- **`COM_BASE_URL` has no correct guessable default — GreenLake region names
+  are not what you'd assume from the public docs' `<COM-API-base-URL>`
+  placeholder.** `global`/`us1`/`eu1` all 404 for a real tenant; the real,
+  working region host for one verified account was `eu-central` (i.e.
+  `https://eu-central.api.greenlake.hpe.com`). Never hardcode a default; always
+  require the operator to supply their own account's actual API base URL.
+
 ## Target-API drift + adapter validation (critical)
 
 - **A validated RAISE path proves NOTHING about the CLEAR path — they call
