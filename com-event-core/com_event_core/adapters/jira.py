@@ -38,7 +38,7 @@ import re
 
 import httpx
 
-from com_event_core.enrich.render import HEADING, has_analysis
+from com_event_core.enrich.render import ADVISORY_HEADING, HEADING, has_advisories, has_analysis
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -167,6 +167,17 @@ class JiraAdapter(TargetAdapter):
             if e.analysis_actions:
                 content.append(_adf_para("Recommended actions:", bold=True))
                 content.append(_adf_ordered_list(e.analysis_actions))
+        # Optional HPE Customer Advisories (empty unless hpe_advisories ran and
+        # matched something).
+        if has_advisories(e):
+            content.append(_adf_heading(ADVISORY_HEADING))
+            for ref in e.advisory_references:
+                label = ref["status"].upper()
+                title = ref.get("title") or "(untitled advisory)"
+                prefix = f"[{label}] {ref['id']}: " if ref.get("id") else f"[{label}] "
+                content.append(_adf_para(f"{prefix}{title}"))
+                if ref.get("url"):
+                    content.append(_adf_para(ref["url"]))
         return {"type": "doc", "version": 1, "content": content}
 
     def forward(self, event: CanonicalEvent) -> None:

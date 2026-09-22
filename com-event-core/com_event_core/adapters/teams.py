@@ -77,7 +77,7 @@ import os
 
 import httpx
 
-from com_event_core.enrich.render import HEADING, has_analysis
+from com_event_core.enrich.render import ADVISORY_HEADING, HEADING, has_advisories, has_analysis
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -151,6 +151,23 @@ class TeamsAdapter(TargetAdapter):
                     f"{i}. {a}" for i, a in enumerate(e.analysis_actions, 1)
                 )
                 body.append({"type": "TextBlock", "wrap": True, "text": actions_text})
+
+        # Optional HPE Customer Advisories (empty unless hpe_advisories ran and
+        # matched something) — its own TextBlocks, matching the analysis section.
+        if has_advisories(e):
+            body.append({"type": "TextBlock", "weight": "Bolder", "wrap": True,
+                         "text": ADVISORY_HEADING, "spacing": "Large"})
+            for ref in e.advisory_references:
+                label = ref["status"].upper()
+                title = ref.get("title") or "(untitled advisory)"
+                text = f"[{label}] " + (f"{ref['id']}: " if ref.get("id") else "") + title
+                block = {"type": "TextBlock", "wrap": True, "text": text}
+                if ref.get("url"):
+                    body.append(block)
+                    body.append({"type": "TextBlock", "wrap": True, "isSubtle": True,
+                                 "text": ref["url"]})
+                else:
+                    body.append(block)
 
         card: dict = {
             "type": "AdaptiveCard",

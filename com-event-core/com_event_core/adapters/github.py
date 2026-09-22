@@ -30,7 +30,7 @@ import os
 
 import httpx
 
-from com_event_core.enrich.render import HEADING, has_analysis
+from com_event_core.enrich.render import ADVISORY_HEADING, HEADING, has_advisories, has_analysis
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -93,6 +93,18 @@ class GitHubAdapter(TargetAdapter):
             if e.analysis_actions:
                 lines.append("**Recommended actions:**")
                 lines += [f"{i}. {a}" for i, a in enumerate(e.analysis_actions, 1)]
+        # Optional HPE Customer Advisories (empty unless hpe_advisories ran and
+        # matched something).
+        if has_advisories(e):
+            lines += ["", f"### {ADVISORY_HEADING}", ""]
+            for ref in e.advisory_references:
+                label = ref["status"].upper()
+                title = ref.get("title") or "(untitled advisory)"
+                prefix = f"**[{label}]** `{ref['id']}` " if ref.get("id") else f"**[{label}]** "
+                line = f"- {prefix}{title}"
+                if ref.get("url"):
+                    line += f" — [advisory]({ref['url']})"
+                lines.append(line)
         # Hidden marker so the correlation is auditable in the issue body.
         lines += ["", f"<!-- {_MARKER} {e.correlation_key or e.dedup_key} -->"]
         return "\n".join(lines)
@@ -124,7 +136,7 @@ class GitHubAdapter(TargetAdapter):
             f"{self._api}/search/issues", params={"q": q}, headers=self._headers
         )
         r.raise_for_status()
-        numbers = [it["number"] for it in r.json().get("items", [])]
+        numbers = [it["number"] for it in r.json().get("items", []) if "number" in it]
         if not numbers:
             log.info("no open GitHub issue for %s; nothing to close", label)
             return

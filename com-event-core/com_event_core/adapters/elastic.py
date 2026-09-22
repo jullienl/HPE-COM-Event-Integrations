@@ -74,6 +74,10 @@ class ElasticAdapter(TargetAdapter):
             "analysis_root_cause": e.analysis_root_cause,
             "analysis_confidence": e.analysis_confidence,
             "analysis_actions": e.analysis_actions,
+            # Optional HPE Customer Advisories (empty unless hpe_advisories ran and
+            # matched something). Elastic already accepts nested JSON fine (see
+            # `tags` above), so this ships as a raw list of objects.
+            "advisory_references": e.advisory_references,
         }
 
     def forward(self, event: CanonicalEvent) -> None:

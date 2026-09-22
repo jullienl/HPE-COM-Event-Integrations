@@ -97,7 +97,7 @@ async def webhook(request: Request):
     if challenge is not None:
         log.info("handshake received; echoing verification token")
         return Response(
-            content=f'{{"verification": "{challenge}"}}',
+            content=json.dumps({"verification": challenge}),
             media_type="application/json",
             status_code=200,
         )

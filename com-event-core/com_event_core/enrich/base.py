@@ -40,6 +40,16 @@ class Enricher(ABC):
     #: Short name used to select the enricher via the ENRICHERS env var.
     name: str = "base"
 
+    #: Run order, lower runs first. `get_enrichers()` sorts by this — NOT by
+    #: the order names are listed in ENRICHERS — so a dependency between two
+    #: enrichers (e.g. one attaches evidence the other must see) is enforced by
+    #: the framework regardless of how an operator writes the env var.
+    #: `ENRICHERS=ilo_ai,hpe_advisories` and `ENRICHERS=hpe_advisories,ilo_ai`
+    #: run in the identical, correct order. Ties keep the ENRICHERS order given
+    #: (stable sort), so unrelated enrichers with no ordering requirement are
+    #: unaffected.
+    priority: int = 100
+
     def wants(self, event: CanonicalEvent) -> bool:
         """True if this enricher applies to `event`.
 

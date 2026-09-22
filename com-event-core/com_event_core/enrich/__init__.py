@@ -29,6 +29,7 @@ log = logging.getLogger("com-event-core.enrich")
 # deployment that doesn't use one needs neither its config nor its dependencies.
 _ENRICHERS = {
     "ilo_ai": ("com_event_core.enrich.ilo_ai", "IloAiEnricher"),
+    "hpe_advisories": ("com_event_core.enrich.hpe_advisories", "HpeAdvisoriesEnricher"),
 }
 
 
@@ -51,6 +52,13 @@ def get_enrichers() -> list[Enricher]:
     in order. Names are lower-cased and de-duplicated with order preserved; an
     unknown name raises ValueError at startup rather than silently doing nothing.
 
+    The returned list is sorted by each enricher's `priority` (lower first,
+    stable sort) — NOT by the order names were listed in `ENRICHERS`. This
+    means a dependency between two enrichers (e.g. `hpe_advisories` must run
+    before `ilo_ai` so the latter can include the former's evidence) is
+    guaranteed by the framework: `ENRICHERS=ilo_ai,hpe_advisories` and
+    `ENRICHERS=hpe_advisories,ilo_ai` produce the identical, correct run order.
+
     Config errors surface here, at startup, not on the first event.
     """
     raw = os.environ.get("ENRICHERS", "")
@@ -59,7 +67,9 @@ def get_enrichers() -> list[Enricher]:
         name = part.strip().lower()
         if name and name not in ordered:
             ordered.append(name)
-    return [_instantiate(name) for name in ordered]
+    enrichers = [_instantiate(name) for name in ordered]
+    enrichers.sort(key=lambda e: e.priority)
+    return enrichers
 
 
 def enrich_events(

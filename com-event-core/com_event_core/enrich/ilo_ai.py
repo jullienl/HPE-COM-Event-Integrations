@@ -21,11 +21,18 @@ outbound-only property is preserved.
 The four things that keep it safe
 ---------------------------------
 * **Gated.** Only ``raise`` actions, only at or above ``AI_MIN_SEVERITY``, only
-  when ``mgmt_url`` is set. Server snapshots emit a ``clear`` for every healthy
-  condition on *every* delivery; analysing those would be pure cost.
+  when ``mgmt_url`` is set or can be resolved. Server snapshots emit a
+  ``clear`` for every healthy condition on *every* delivery; analysing those
+  would be pure cost. Alert-sourced events never carry ``mgmt_url`` directly
+  (verified against the live COM alerts API, 2026-09), so a raise alert
+  resolves it via a COM API lookup of ``device.resourceUri``/``device.id``
+  first; this is a normal skip, not an error, when COM API access isn't
+  configured or the lookup fails.
 * **Cached** by ``correlation_key``. A `PartialDeliveryError` retries the whole
   payload, so without a cache the analysis is re-run — and re-paid for — on
-  every retry of a multi-target fan-out.
+  every retry of a multi-target fan-out. The resolved alert ``mgmt_url`` is
+  also cached, separately, per device id, since a BMC address effectively
+  never changes.
 * **Budgeted.** Hourly/daily caps trip a circuit breaker that skips analysis
   rather than spending without limit. The breaker's state is logged loudly on
   trip and on reset, so "tickets stopped carrying analysis" has a visible cause.
@@ -44,6 +51,7 @@ import httpx
 
 from .base import Enricher
 from .redfish import collect_evidence
+from ..com_client import ComClient
 from ..normalize import ACTION_RAISE, CanonicalEvent
 from ..secrets import get_secret
 
@@ -191,6 +199,9 @@ class IloAiEnricher(Enricher):
     """Enriches server problem events with iLO-evidence-based AI analysis."""
 
     name = "ilo_ai"
+    # Must run after any enricher that attaches evidence this one consumes
+    # (e.g. hpe_advisories' event.advisory_evidence) — see Enricher.priority.
+    priority = 50
 
     def __init__(self) -> None:
         # Fail fast at startup on missing config rather than on the first event.
@@ -221,6 +232,14 @@ class IloAiEnricher(Enricher):
             per_day=int(os.environ.get("AI_MAX_ANALYSES_PER_DAY", "500")),
         )
         self._cache = _Cache(ttl=int(os.environ.get("AI_CACHE_TTL_SECONDS", "3600")))
+        # Separate cache: an analysis is per-PROBLEM (correlation_key), a
+        # resolved BMC address is per-DEVICE, and effectively never changes.
+        self._mgmt_url_cache = _Cache(
+            ttl=int(os.environ.get("ILO_ALERT_MGMT_URL_CACHE_TTL_SECONDS", "86400"))
+        )
+        # Set once the first alert hits an unconfigured COM API, so that
+        # misconfiguration is logged loudly but only once, not once per alert.
+        self._com_not_configured_warned = False
 
     # --- gating ----------------------------------------------------------
     def wants(self, event: CanonicalEvent) -> bool:
@@ -231,10 +250,13 @@ class IloAiEnricher(Enricher):
         if _SEVERITY_RANK.get(event.severity, 0) < self._min_rank:
             return False
 
+        if not event.mgmt_url and event.source_type == "alert":
+            event.mgmt_url = self._resolve_alert_mgmt_url(event)
+
         if not event.mgmt_url:
-            # Not an error, and not always a config mistake: `_normalize_alert`
-            # sets mgmt_url=None unconditionally, so alert-sourced events never
-            # carry a BMC address. Say so once, plainly, and move on.
+            # Not an error, and not always a config mistake: an alert-sourced
+            # event only reaches here when it has no mgmt_url of its own AND
+            # the COM API resolution above wasn't configured or didn't find one.
             log.info(
                 "no mgmt_url on event %s (source_type=%s); skipping AI analysis",
                 event.event_id, event.source_type,
@@ -242,6 +264,65 @@ class IloAiEnricher(Enricher):
             return False
 
         return True
+
+    def _resolve_alert_mgmt_url(self, event: CanonicalEvent) -> str | None:
+        """Resolve mgmt_url for an alert-sourced raise via the COM API.
+
+        An alert payload never carries a BMC address directly, only
+        ``device.resourceUri`` (preferred) or ``device.id``, a reference to
+        the server resource whose ``hardware.bmc.ip`` we need. Cached per
+        device id, separately from the analysis cache above, since a resolved
+        address doesn't expire the way an analysis does. Fails open: a
+        missing device id, unconfigured COM API access, or a lookup error all
+        just mean "no mgmt_url", the same as an alert always producing today.
+        """
+        device = (event.raw or {}).get("device")
+        device = device if isinstance(device, dict) else {}
+        device_id = device.get("id")
+        if not device_id:
+            return None
+
+        cached = self._mgmt_url_cache.get(device_id)
+        if cached is not None:
+            return cached.get("mgmt_url")
+
+        try:
+            client = ComClient()
+        except RuntimeError as e:
+            # ComClient() raises RuntimeError only for missing config
+            # (COM_BASE_URL / credentials) — never for a live API failure,
+            # which only happens once the client is actually used below.
+            # Distinct from a transient lookup failure, this repeats for
+            # every alert until fixed, so warn loudly, but only once.
+            if not self._com_not_configured_warned:
+                self._com_not_configured_warned = True
+                log.warning(
+                    "alert-sourced AI analysis needs COM_BASE_URL + COM "
+                    "credentials to resolve mgmt_url (%s); alerts will be "
+                    "delivered unenriched until this is configured (logged once)",
+                    e,
+                )
+            return None
+
+        try:
+            with client:
+                resource_uri = device.get("resourceUri")
+                server = (
+                    client.get(resource_uri, params={"select": "hardware"})
+                    if resource_uri
+                    else client.get_server(device_id, select="hardware")
+                )
+        except Exception as e:
+            log.info(
+                "event %s: COM lookup for alert device %s failed (%s); "
+                "skipping AI analysis", event.event_id, device_id, e,
+            )
+            return None
+
+        ip = ((server.get("hardware") or {}).get("bmc") or {}).get("ip")
+        mgmt_url = f"https://{ip}" if ip else None
+        self._mgmt_url_cache.put(device_id, {"mgmt_url": mgmt_url})
+        return mgmt_url
 
     # --- enrichment ------------------------------------------------------
     def enrich(self, event: CanonicalEvent) -> None:
@@ -290,6 +371,12 @@ class IloAiEnricher(Enricher):
             # Thread every analysis of one problem into the same conversation.
             "session_id": event.correlation_key or event.event_id,
         }
+        # Only present when ENRICHERS also runs hpe_advisories (order matters:
+        # it must come before ilo_ai so this field is already set). Absent
+        # otherwise, so the analyzer payload is unchanged for every existing
+        # deployment.
+        if event.advisory_evidence:
+            body["input"]["advisories"] = event.advisory_evidence
         if self._tenant:
             body["tenant"] = self._tenant
 

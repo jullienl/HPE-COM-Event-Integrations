@@ -20,7 +20,7 @@ import os
 
 import httpx
 
-from com_event_core.enrich.render import HEADING, has_analysis
+from com_event_core.enrich.render import ADVISORY_HEADING, HEADING, has_advisories, has_analysis
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -112,6 +112,25 @@ class SlackAdapter(TargetAdapter):
                     "type": "section",
                     "text": {"type": "mrkdwn",
                              "text": _clip(f"*Recommended actions:*\n{actions_text}", 2900)},
+                })
+        # Optional HPE Customer Advisories (empty unless hpe_advisories ran and
+        # matched something). Rendered as its own blocks, same reasoning as the
+        # AI analysis above: separate blocks keep each advisory scannable.
+        if has_advisories(e):
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f":memo: *{ADVISORY_HEADING}*"}],
+            })
+            for ref in e.advisory_references:
+                label = ref["status"].upper()
+                title = ref.get("title") or "(untitled advisory)"
+                text = f"*[{label}]* " + (f"`{ref['id']}` " if ref.get("id") else "") + title
+                if ref.get("url"):
+                    text += f"\n<{ref['url']}|View advisory>"
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": _clip(text, 2900)},
                 })
         elements: list[dict] = []
         if e.mgmt_url:

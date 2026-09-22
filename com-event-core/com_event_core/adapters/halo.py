@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 
 import httpx
@@ -63,35 +64,39 @@ class HaloAdapter(TargetAdapter):
         self._timeout = int(os.environ.get("TARGET_TIMEOUT", "15"))
         self._tickets_url = f"{self._api}/api/Tickets"
         # Cached OAuth2 bearer token (client-credentials) + its expiry epoch.
+        # Locked: this adapter instance is shared between the HTTP handler and
+        # the background spool/queue worker thread.
+        self._token_lock = threading.Lock()
         self._token: str | None = None
         self._token_exp: float = 0.0
 
     def _bearer(self, client: httpx.Client) -> str:
-        # Reuse the cached token until ~30s before it expires.
-        if self._token and time.time() < self._token_exp - 30:
+        with self._token_lock:
+            # Reuse the cached token until ~30s before it expires.
+            if self._token and time.time() < self._token_exp - 30:
+                return self._token
+            # Hosted (multi-tenant) Halo takes the tenant as a query param.
+            url = f"{self._api}/auth/token"
+            if self._tenant:
+                url = f"{url}?tenant={self._tenant}"
+            r = client.post(
+                url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "scope": "all",
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+            )
+            r.raise_for_status()
+            tok = r.json()
+            self._token = tok["access_token"]
+            self._token_exp = time.time() + int(tok.get("expires_in", 3600))
             return self._token
-        # Hosted (multi-tenant) Halo takes the tenant as a query param.
-        url = f"{self._api}/auth/token"
-        if self._tenant:
-            url = f"{url}?tenant={self._tenant}"
-        r = client.post(
-            url,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "scope": "all",
-            },
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "application/json",
-            },
-        )
-        r.raise_for_status()
-        tok = r.json()
-        self._token = tok["access_token"]
-        self._token_exp = time.time() + int(tok.get("expires_in", 3600))
-        return self._token
 
     def _to_ticket(self, e: CanonicalEvent) -> dict:
         details = (
@@ -151,7 +156,10 @@ class HaloAdapter(TargetAdapter):
         q.raise_for_status()
         body = q.json()
         tickets = body.get("tickets", body) if isinstance(body, dict) else body
-        ids = [t["id"] for t in tickets if isinstance(t, dict) and t.get("thirdpartyref") == ref]
+        ids = [
+            t["id"] for t in tickets
+            if isinstance(t, dict) and t.get("thirdpartyref") == ref and "id" in t
+        ]
         if not ids:
             log.info("no open Halo ticket for %s; nothing to close", ref)
             return

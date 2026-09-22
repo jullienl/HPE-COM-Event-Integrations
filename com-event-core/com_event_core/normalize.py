@@ -112,6 +112,20 @@ class CanonicalEvent:
     #: Ordered, concrete remediation steps.
     analysis_actions: list[str] = field(default_factory=list)
 
+    # --- HPE Customer Advisories (filled by the optional hpe_advisories --
+    # enrichment stage). Both stay empty/None when the enricher is disabled,
+    # skipped (no firmware bundle info available), or failed — fail-open, same
+    # as the analysis_* fields above.
+    #: Small, ticket-renderable set of advisories judged relevant to this
+    #: event (conservative keyword match against category/title/description).
+    #: Each item: {"status": "open"|"resolved", "id", "title", "component",
+    #: "summary", "resolution", "url"}.
+    advisory_references: list[dict] = field(default_factory=list)
+    #: Full evidence for the analyzer only (not meant for ticket rendering):
+    #: {"bundle": {...}, "open": [...], "resolved": [...]}. None when no
+    #: firmware bundle could be resolved for this event.
+    advisory_evidence: dict | None = None
+
 
 # Values in a server health block that are NOT problems (so we can list the
 # genuinely unhealthy subsystems in the description).
@@ -379,7 +393,8 @@ def _server_health_detail(name: str, summary: str | None, health: dict) -> str:
 
 def _normalize_alert(payload: dict) -> CanonicalEvent:
     """Map a `compute-ops-mgmt/alert` payload (alert-lifecycle webhooks)."""
-    device = payload.get("device", {}) or {}
+    device = payload.get("device")
+    device = device if isinstance(device, dict) else {}
     part_number, serial = _split_asset_id(device.get("id"))
 
     severity = _map_alert_severity(payload.get("severity"))
@@ -392,7 +407,7 @@ def _normalize_alert(payload: dict) -> CanonicalEvent:
     alert_id = str(payload.get("id", ""))
     correlation_key = f"alert:{alert_id}"  # same id on create and clear/delete
     description = payload.get("description")
-    title = (description or payload.get("messageId") or "COM alert").splitlines()[0][:200]
+    title = str(description or payload.get("messageId") or "COM alert").splitlines()[0][:200]
 
     return CanonicalEvent(
         event_id=alert_id,

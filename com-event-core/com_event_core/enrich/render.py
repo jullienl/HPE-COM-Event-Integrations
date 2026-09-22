@@ -82,3 +82,39 @@ def analysis_text(event: CanonicalEvent) -> str:
     """The analysis as one newline-joined block, `""` when there is none."""
     lines = analysis_lines(event)
     return "\n".join([HEADING, *lines]) if lines else ""
+
+
+#: Heading used above the advisory references by every adapter.
+ADVISORY_HEADING = "HPE Customer Advisories (from installed firmware bundle)"
+
+
+def has_advisories(event: CanonicalEvent) -> bool:
+    """True when the hpe_advisories enricher attached anything worth rendering."""
+    return bool(event.advisory_references)
+
+
+def advisory_lines(event: CanonicalEvent) -> list[str]:
+    """Plain-text lines describing matched advisories; empty when there are none.
+
+    One line per advisory: its status, id (when known), and title, followed by
+    its URL on the next line so it reads as a reference rather than a claim.
+    The heading is *not* included here, matching `analysis_lines()`'s contract.
+    """
+    if not has_advisories(event):
+        return []
+
+    lines: list[str] = []
+    for ref in event.advisory_references:
+        label = ref["status"].upper()
+        title = ref.get("title") or "(untitled advisory)"
+        prefix = f"[{label}] {ref['id']}: " if ref.get("id") else f"[{label}] "
+        lines.append(f"{prefix}{title}")
+        if ref.get("url"):
+            lines.append(f"  {ref['url']}")
+    return lines
+
+
+def advisory_text(event: CanonicalEvent) -> str:
+    """The advisory references as one newline-joined block, `""` when none."""
+    lines = advisory_lines(event)
+    return "\n".join([ADVISORY_HEADING, *lines]) if lines else ""
