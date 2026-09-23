@@ -522,9 +522,7 @@ AI enrichment is fail-open and optional. The [AI analysis enrichment guide](com-
 covers the full flow, configuration, analyzer contract, returned fields, and
 delivery behavior, including analyzer outages, Redfish failures, timeouts,
 caching, budget limits, worker latency, queue or spool backpressure, and
-condition-level isolation. Use `ENRICHERS=ilo_ai,hpe_advisories` when the
-analysis should also receive HPE Customer Advisory context.
-
+condition-level isolation. 
 
 ---
 
