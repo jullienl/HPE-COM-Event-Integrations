@@ -242,18 +242,32 @@ def _forward_sync(payload: dict, event_type: str) -> Response:
 def _accept_to_spool(body: bytes, event_type: str) -> Response:
     """Durable delivery: persist and ack immediately; the worker drains + retries.
 
-    If the spool is over budget (prolonged target outage) we return 503 as
-    backpressure rather than fill the disk. Note COM is fire-and-forget and will
-    NOT resend, so an event rejected here is dropped — size SPOOL_MAX_BYTES for
-    your worst-case outage so this stays a last-resort safety valve.
+    If the normal spool is over budget, use the bounded overflow lane and deliver
+    that event without enrichment. Return 503 only when both durable lanes are
+    full or unavailable, because COM does not resend failed webhook deliveries.
     """
     assert spool is not None  # created in spool mode at startup
     try:
         row_id = spool.put(body, {"event_type": event_type, "source": "com-event-bridge"})
     except SpoolFull:
-        log.error("spool full; returning 503 (backpressure — COM does not retry, event dropped)",
-                  extra={"status": 503, "mode": "spool"})
-        raise HTTPException(status_code=503, detail="spool full; retry later")
+        try:
+            row_id = spool.put_overflow(
+                body, {"event_type": event_type, "source": "com-event-bridge"}
+            )
+        except SpoolFull:
+            log.error(
+                "spool and overflow lane full; returning 503 "
+                "(COM does not retry, event dropped)",
+                extra={"status": 503, "mode": "spool"},
+            )
+            raise HTTPException(status_code=503, detail="spool and overflow lanes full")
+
+        log.warning(
+            "normal spool full; event accepted in overflow lane without enrichment",
+            extra={"event_type": event_type, "bytes": len(body),
+                   "status": 202, "mode": "overflow"},
+        )
+        return Response(status_code=202, headers={"x-bridge-event-id": str(row_id)})
 
     log.info("event spooled",
              extra={"event_type": event_type, "bytes": len(body),

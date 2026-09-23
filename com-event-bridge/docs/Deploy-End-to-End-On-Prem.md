@@ -63,12 +63,10 @@ COM   ──webhook──►   [ nginx :443 (TLS) ]  ──►  [ BRIDGE :8080 ]
   docker version        # Server section must print
   docker compose version
   ```
-- **This repo cloned on the host** — the compose stack builds the image from
-  source (it bundles the sibling `com-event-core` package), so you need the tree:
-  ```bash
-  git clone https://github.com/jullienl/HPE-COM-Event-Integrations.git
-  cd HPE-COM-Event-Integrations/com-event-bridge
-  ```
+- **Published Bridge image:** `ghcr.io/jullienl/com-event-bridge:1.0.0`.
+  The operator path pulls this image directly and does not require a repository
+  checkout. A source checkout is only needed for contributor or maintainer
+  workflows that intentionally build the image locally.
 - A **public DNS name** you control (e.g. `com-bridge.example.com`) that you can
   point at the host's public IP (step 2).
 - A **GitHub repository** you can create issues in (a throwaway repo is ideal for
@@ -239,10 +237,11 @@ docker compose run --rm certbot certonly \
   --email ops@example.com --agree-tos --no-eff-email
 ```
 
-**3. Bring up the full stack:**
+**3. Pull the published Bridge image and bring up the full stack:**
 
 ```bash
-docker compose up -d --build
+docker compose pull bridge
+docker compose up -d
 ```
 
 certbot renews the cert twice daily; after a renewal reload nginx to pick it up

@@ -20,7 +20,7 @@ The Bridge is the **single-box alternative** to [`com-event-relay`](../com-event
 |---|---|---|
 | **Topology** | Cloud relay + durable queue + on-prem shim | One on-prem host |
 | **Cloud footprint** | Azure or AWS required | None |
-| **Inbound exposure** | None into customer network | Public HTTPS endpoint required |
+| **Inbound exposure** | None into your network | Public HTTPS endpoint required |
 | **Durability** | Managed cloud queue | Local spool |
 | **Best for** | No inbound path + cloud durability | No-cloud mandate + simplicity |
 
@@ -150,7 +150,7 @@ Private target
 
 Prefer [`com-event-relay`](../com-event-relay/) when:
 
-- inbound HTTPS cannot be opened into the customer environment
+- inbound HTTPS cannot be opened into your environment
 - the public edge should be hosted as a managed cloud service
 - durable queue storage outside the Bridge host is preferred
 - receive and delivery should scale independently
@@ -317,15 +317,26 @@ on persistent storage.
 
 ---
 
-## Spool capacity and event loss
+## Spool capacity and overflow handling
 
-The backlog is capped by:
+The normal enriched backlog is capped by:
 
 ```text
 SPOOL_MAX_BYTES
 ```
 
-When the spool reaches that limit, the Bridge returns:
+When the normal spool reaches that limit, the Bridge accepts the event in a
+separate bounded overflow lane:
+
+```text
+SPOOL_OVERFLOW_MAX_BYTES
+```
+
+Overflow events are persisted in the same SQLite database, acknowledged with
+`202`, and delivered without running any configured enrichers. Target failures
+still use the normal retry and de-duplication path.
+
+If both the normal spool and overflow lane are full, the Bridge returns:
 
 ```text
 503
@@ -335,9 +346,11 @@ for new events.
 
 > **Important**
 >
-> This `503` protects the Bridge host from disk exhaustion, but it does **not** preserve the incoming COM event. COM does not retry failed webhook deliveries.
+> This `503` protects the Bridge host from disk exhaustion, but it does **not**
+> preserve the incoming COM event. COM does not retry failed webhook deliveries.
 >
-> Once the spool is full, new events are intentionally dropped.
+> Size both budgets for the expected outage and keep the volume durable. The
+> overflow lane is bounded degraded delivery, not unlimited storage.
 
 This means spool capacity and backlog growth should be monitored in production.
 
@@ -477,9 +490,28 @@ If high availability across host failure is a primary requirement, the Relay + m
 >
 > [`docs/Deploy-End-to-End-On-Prem.md`](docs/Deploy-End-to-End-On-Prem.md)
 
+## Run the published image
+
+For an operator smoke test, use the published image. No source checkout or
+image build is required:
+
+```bash
+docker pull ghcr.io/jullienl/com-event-bridge:1.0.0
+docker volume create bridge-data
+docker run -d --name com-event-bridge \
+   -p 8080:8080 \
+   -v bridge-data:/data \
+   --env-file bridge/.env \
+   ghcr.io/jullienl/com-event-bridge:1.0.0
+```
+
+The full runbook covers TLS, DNS, COM registration, persistence, and production
+hardening. The source checkout and local Python paths below are for contributors
+and development smoke tests only.
+
 ---
 
-## Run locally in sync mode
+## Developer smoke test: run locally in sync mode
 
 The default mode is `spool`, which requires persistent storage.
 
@@ -524,7 +556,7 @@ Expected result:
 
 ---
 
-## Run the container in spool mode
+## Developer path: build the container locally
 
 Build from the repository root so the image includes `com-event-core`:
 
@@ -617,7 +649,8 @@ Target-specific adapter credentials and mappings are documented centrally in:
 | `MAX_BODY_BYTES` | No | `262144` | Maximum request body (256 KB) |
 | `DELIVERY_MODE` | No | `spool` | `spool` (durable) or `sync` (best-effort) |
 | `SPOOL_PATH` | Yes in spool mode | `/data/spool.db` | Persistent SQLite spool path (container default; must be on durable storage) |
-| `SPOOL_MAX_BYTES` | No | `52428800` | Maximum local spool backlog (50 MB); over this → `503` backpressure |
+| `SPOOL_MAX_BYTES` | No | `52428800` | Maximum normal enriched backlog (50 MB); overflow then uses the unenriched lane |
+| `SPOOL_OVERFLOW_MAX_BYTES` | No | `10485760` | Maximum unenriched overflow backlog (10 MB); over this with the normal spool full → `503` |
 | `SPOOL_RETRY_SECONDS` | No | `30` | Initial retry delay (grows exponentially per attempt) |
 | `SPOOL_RETRY_CAP` | No | `3600` | Maximum retry delay (1 hour) |
 | `SPOOL_POLL_SECONDS` | No | `2` | How often the background worker checks for due spooled events |
@@ -928,7 +961,7 @@ Choose **Bridge** when:
 
 Choose **Relay + Shim** when:
 
-- no inbound connection into the customer network is allowed
+- no inbound connection into your network is allowed
 - managed cloud ingress is preferred
 - cloud-queue durability is preferred
 - the public receiver and internal delivery path should be decoupled

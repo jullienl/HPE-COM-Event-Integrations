@@ -57,15 +57,10 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
 
 ## 0. Prerequisites
 
-- **This repo cloned locally** — needed **only** for the deploy **script**
-  (Option A), the **synthetic-event test** (step 6, Path B), or running the shim
-  **directly with Python** (step 5). The **Docker** shim and the manual
-  walkthrough with a **real COM event** don't need it (they pull the published
-  image and read env vars only):
-  ```powershell
-  git clone https://github.com/jullienl/HPE-COM-Event-Integrations.git
-  cd HPE-COM-Event-Integrations
-  ```
+- **Operator path:** no repository checkout is required. This runbook uses
+  published GHCR images and configuration values.
+- **Optional checkout:** only needed if you choose the helper script, synthetic
+  event test, or direct Python development path later in this runbook.
 - **AWS CLI v2 installed**, then configured for the target account. If `aws` isn't
   already on the machine, install it first (see
   [Install the AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)):
@@ -134,9 +129,9 @@ $APP    = "com-event-relay"                                          # App Runne
 $HDR    = "x-shim-secret"                                            # HTTP header COM sends carrying the shared secret (auth on every POST)
 
 $ACCOUNT    = aws sts get-caller-identity --query Account --output text                    # your 12-digit AWS account ID
-$GHCR_IMAGE = "ghcr.io/jullienl/com-event-relay:latest"               # upstream image published by CI (App Runner can't pull this directly)
+$GHCR_IMAGE = "ghcr.io/jullienl/com-event-relay:1.0.0"               # upstream image published by CI (App Runner can't pull this directly)
 $ECR_REPO   = "com-event-relay"                                       # your private ECR repo name (created in step 3.1)
-$IMAGE      = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:latest"   # the ECR image App Runner actually pulls (mirror target)
+$IMAGE      = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:1.0.0"   # the ECR image App Runner actually pulls (mirror target)
 
 # 32-byte (64 hex char) shared secret, no openssl needed on Windows:
 $SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
@@ -166,7 +161,7 @@ Then from **AWS CloudShell** or **WSL/Git Bash** on Windows, in your clone:
 cd com-event-relay/deploy/aws
 
 # Run it — pass your ECR image URI + the two role ARNs (Option B steps 2 and 3.2)
-IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:latest \
+IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:1.0.0 \
 INSTANCE_ROLE_ARN=<role-from-Option-B-step-2> \
 ACCESS_ROLE_ARN=<role-from-Option-B-step-3.2> \
 AWS_REGION=eu-west-1 \
@@ -362,7 +357,7 @@ $FQDN = aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGI
 > scale-to-zero cold-start to worry about.
 
 **Updating the relay later.** When CI publishes a new GHCR image, re-run the
-mirror (step 3.1) to copy `:latest` into ECR, then trigger a fresh App Runner
+mirror (step 3.1) to copy `:1.0.0` into ECR, then trigger a fresh App Runner
 deployment:
 `aws apprunner start-deployment --service-arn $SERVICE_ARN --region $REGION`.
 
@@ -633,7 +628,7 @@ docker run --rm --name com-event-shim `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:latest
+  ghcr.io/jullienl/com-event-shim:1.0.0
 ```
 
 The shim logs each message it drains, the events it normalises, and the forward
@@ -686,7 +681,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:latest
+  ghcr.io/jullienl/com-event-shim:1.0.0
 ```
 
 > **Credentials hygiene:** injecting keys as env vars is fine for a quick test;
@@ -720,7 +715,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
 >   -e GITHUB_REPO=your-org/com-issues `
 >   -e GITHUB_TOKEN_FILE=/run/secrets/github-token `
 >   -e SERVER_MONITORS=health `
->   ghcr.io/jullienl/com-event-shim:latest
+>   ghcr.io/jullienl/com-event-shim:1.0.0
 > ```
 >
 > On **EKS** mount an AWS Secrets Manager secret via the **Secrets Store CSI

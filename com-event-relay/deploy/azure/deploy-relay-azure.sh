@@ -16,7 +16,7 @@ SB_NS="${SB_NS:-sbcomrelay$RANDOM}"
 QUEUE="${QUEUE:-com-events}"
 ACA_ENV="${ACA_ENV:-aca-com-relay}"
 APP_NAME="${APP_NAME:-com-event-relay}"
-IMAGE="${IMAGE:-ghcr.io/jullienl/com-event-relay:latest}"
+IMAGE="${IMAGE:-ghcr.io/jullienl/com-event-relay:1.0.0}"
 SHARED_SECRET_HEADER="${SHARED_SECRET_HEADER:-x-shim-secret}"
 SECRET="${SECRET:-$(openssl rand -hex 32)}"
 

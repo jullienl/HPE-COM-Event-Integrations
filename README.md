@@ -24,7 +24,7 @@ It ships as **ready-to-run, multi-architecture container images** published to *
 
 Two deployment models are available:
 
-- **Relay + Shim**: use a managed public cloud edge and keep the customer network outbound-only.
+- **Relay + Shim**: use a managed public cloud edge and keep your network outbound-only.
 - **Bridge**: run a single all-in-one receiver when you can expose an HTTPS endpoint that COM can reach.
 
 Both models share the same normalisation, de-duplication, correlation, and target-adapter logic from `com-event-core`.
@@ -159,7 +159,7 @@ All deployment-specific behavior is supplied through configuration, including:
 
 With **Relay + Shim**, the public endpoint lives in Azure or AWS and the on-premises shim consumes from the queue using outbound connectivity.
 
-With this model, **no inbound network path is required into the customer environment**. (The **Bridge** model does require inbound HTTPS, since COM connects to it directly.)
+With this model, **no inbound network path is required into your environment**. (The **Bridge** model does require inbound HTTPS, since COM connects to it directly.)
 
 ---
 
@@ -199,7 +199,7 @@ This keeps the COM contract, de-duplication, correlation, and delivery behavior 
 
 → [`com-event-bridge`](com-event-bridge/)
 
-**Need an outbound-only customer architecture with no inbound port into the customer network?**
+**Need an outbound-only architecture with no inbound port into your network?**
 
 → [`com-event-relay`](com-event-relay/)
 
@@ -221,13 +221,13 @@ Follow an end-to-end deployment runbook:
 
 ## 1. Relay + Shim
 
-Recommended when the target resides in a restricted or private customer network.
+Recommended when the target resides in your restricted or private network.
 
 <img src="docs/images/com-event-relay-architecture.png" alt="COM Event Relay architecture" width="800" />
 
 ### Benefits
 
-- No inbound port into the customer network
+- No inbound port into your network
 - Cloud-managed public HTTPS edge
 - Durable cloud queue
 - Receive and delivery are decoupled
@@ -294,7 +294,7 @@ See [`com-event-bridge`](com-event-bridge/) for deployment details and [`end-to-
 
 | Option | Use it when |
 |---|---|
-| **Relay + Shim** | You want the public edge in Azure/AWS, a durable queue, or no inbound network path into the customer environment. |
+| **Relay + Shim** | You want the public edge in Azure/AWS, a durable queue, or no inbound network path into your environment. |
 | **Bridge** | You can host the public HTTPS endpoint yourself and prefer a single all-in-one deployment. |
 | **Native COM integration** | COM already provides a native integration for the target and that integration meets the requirement. |
 
@@ -317,7 +317,7 @@ That endpoint normally requires:
 
 With the **Relay + Shim** architecture, only the cloud relay is publicly exposed. The on-premises shim connects outward to consume queued events and deliver them to the internal target.
 
-This means there is **no inbound connection from COM into the customer network**.
+This means there is **no inbound connection from COM into your network**.
 
 ---
 
@@ -409,6 +409,14 @@ For reliable multi-target delivery, use the **Relay + Shim** queue or **Bridge s
 
 Optional, **off by default**, and layered on top of every target adapter above: before an event is delivered, an AI agent can analyze the hardware evidence collected for it and produce a structured incident report that lands **inside** the ticket, issue, or chat message at creation, not bolted on afterward.
 
+The primary supported analyzer is the standalone [AI Gateway](https://github.com/jullienl/ai-gateway),
+which provides the published `com-rca` agent and can use GitHub Copilot, OpenAI,
+Anthropic, or an on-premises OpenAI-compatible model. See the [AI Gateway
+Operator Guide](https://github.com/jullienl/ai-gateway/blob/main/GUIDE.md) for
+deployment and provider configuration. The AI Gateway owns the agent prompt and
+model connection; this project owns the enrichment input and output contract.
+Any service implementing that contract can be used instead.
+
 The report keeps **observed facts**, the specific signals found in the data, separate from **hypothesis**: it proposes a likely root cause, assesses its own confidence in that cause, and recommends further diagnostic checks and concrete remediation actions, without presenting an unverified guess as a definitive conclusion. Intelligent, event-driven operations, not just event forwarding.
 
 ### How the analysis is built
@@ -430,18 +438,13 @@ evidence that is not available in the COM event by itself.
 
 ### Choose an enrichment mode
 
-`ENRICHERS` is configured on the on-premises Shim or Bridge. It is unset by
-default, while `TARGETS` selects the destination adapters. For Bridge
-deployments, enrichment requires `DELIVERY_MODE=spool` with a durable
-`SPOOL_PATH`; enrichment configuration errors fail startup, while per-event
-enrichment failures fail open and do not block delivery.
+AI enrichment is optional and disabled by default. When enabled, it adds context to the normalised COM event before delivery:
 
-| Configuration | Prerequisites | Result |
-|---|---|---|
-| Unset or empty | Normal delivery configuration | Delivers the normalized event without advisory, iLO, or AI enrichment. |
-| `hpe_advisories` | `COM_BASE_URL` plus COM client credentials or `COM_PAT` | Resolves firmware-bundle advisories and compliance for eligible server raises; adds advisory fields and matched references. It does not call the AI analyzer or populate `analysis_*`. |
-| `ilo_ai` | `AI_ANALYZER_URL`, iLO credentials, and a reachable event management URL | Collects bounded Redfish evidence and calls the analyzer; adds `analysis_summary`, `analysis_root_cause`, `analysis_confidence`, and `analysis_actions`. |
-| `hpe_advisories,ilo_ai` | All prerequisites above | Adds advisory context and sends it with Redfish evidence to the analyzer. Enricher priority guarantees `hpe_advisories` runs before `ilo_ai`, regardless of the order in the setting. |
+- `hpe_advisories` adds HPE Customer Advisory and firmware-compliance context.
+- `ilo_ai` collects bounded Redfish evidence and sends it with the event to the configured AI analyzer.
+- `hpe_advisories,ilo_ai` does both, so the analyzer receives the event, Redfish evidence, and relevant advisory context.
+
+Configure enrichment on the on-premises Shim or Bridge with `ENRICHERS`.
 
 Examples:
 
@@ -456,109 +459,51 @@ ENRICHERS=hpe_advisories
 ENRICHERS=ilo_ai
 
 # Advisory context plus AI analysis
-ENRICHERS=hpe_advisories,ilo_ai
+ENRICHERS=ilo_ai,hpe_advisories
 ```
 
-**Baseline pipeline**
+The two enrichers can be listed in either order; the gateway applies them in the required sequence.
 
-```mermaid
-flowchart LR
-  A[COM webhook] --> B[Normalize]
-  B --> C[Deliver to configured targets]
+Configure delivery destinations separately with `TARGETS`.
+
+For Bridge deployments, AI enrichment requires durable delivery:
+
+```text
+DELIVERY_MODE=spool
+SPOOL_PATH=/data/spool.db
 ```
 
-**Advisory-only pipeline**
+### Available enrichment modes
 
-```mermaid
-flowchart LR
-  A[COM webhook] --> B[Normalize]
-  B --> C[hpe_advisories<br/>COM bundle + CA data]
-  C --> D[Attach advisory fields]
-  D --> E[Deliver to configured targets]
-```
+| Setting | What it does | Required configuration |
+|---|---|---|
+| Unset or empty | Delivers the normalized event without advisory, iLO, or AI enrichment. | Normal delivery configuration |
+| `hpe_advisories` | Adds matching HPE Customer Advisory and firmware-compliance context. It does not call the AI analyzer. | `COM_BASE_URL` plus COM client credentials or `COM_PAT` |
+| `ilo_ai` | Collects bounded Redfish evidence and sends it with the event to the configured AI analyzer. | `AI_ANALYZER_URL`, iLO credentials, and a reachable management URL |
+| `hpe_advisories,ilo_ai` | Adds advisory context and sends the event, Redfish evidence, and advisory context to the analyzer. | All prerequisites above |
 
-**Combined advisory and AI pipeline**
+### AI enrichment from Redfish evidence
 
-```mermaid
-flowchart LR
-  A[COM webhook] --> B[Normalize]
-  B --> C[hpe_advisories]
-  C --> D[ilo_ai<br/>Redfish + advisory evidence]
-  D --> E[Deliver enriched event to targets]
-```
-
-### What happens when iLO or the analyzer is unavailable?
-
-AI analysis is fail-open and is optional enrichment, not a prerequisite for
-delivery:
-
-- If the iLO is unreachable or the iLO credentials are incorrect, the event is
-  still delivered, but no AI analysis report is produced because the analyzer
-  is not called.
-- If an individual Redfish resource is missing or a component request fails,
-  the remaining evidence can still be sent to the analyzer, so the report may
-  contain less information.
-- If the analyzer itself is unavailable or returns an invalid response, the
-  event is still delivered without AI analysis.
-- If the analyzer returns only some report fields, adapters render only those
-  fields. Missing summary, root-cause, confidence, or recommended-action data
-  is omitted rather than shown as an empty section.
-
-This prevents a BMC outage, incorrect password, or AI-service outage from
-blocking the underlying COM event or turning it into a delivery retry loop.
-
-### Latency, throughput, and backpressure
-
-Enrichment is called **serially, one raise event at a time**, by the same
-single worker thread that already drains the Bridge's spool or the Shim's
-queue, so there is no worker pool or concurrent enrichment. Several mechanisms
-bound how much that costs, and it never blocks the COM webhook response
-itself: `DELIVERY_MODE=spool` already acks COM with `202` before enrichment
-runs, which is why `ENRICHERS` refuses to start with `DELIVERY_MODE=sync`.
-
-- **Gating** skips the analyzer entirely for clears, low-severity events, and
-  events with no `mgmt_url`.
-- **Caching** (`AI_CACHE_TTL_SECONDS`, default 1h) reuses a repeat raise's
-  result instead of calling the analyzer again.
-- **Budget caps** (`AI_MAX_ANALYSES_PER_HOUR` / `AI_MAX_ANALYSES_PER_DAY`) trip
-  a circuit breaker that skips analysis, at near-zero cost, once exhausted.
-- **A per-call timeout** (`AI_TIMEOUT`, default 90s) bounds a hung analyzer
-  instead of blocking the worker forever.
-
-None of this adds a new queue, spool, or dedup store: the cache and budget
-counter above live in memory in the enrichment process and are lost on
-restart, so enabling `ENRICHERS` never changes the queue/spool/dedup counts
-described for the [Relay + Shim](#which-component-does-what) or
-[Bridge](com-event-bridge/README.md) deployment models.
-
-If the analyzer is merely *slow* rather than down, the worker still spends up
-to `AI_TIMEOUT` seconds per raise, so the backlog can drain slower than events
-arrive:
-
-- **Bridge**: the on-disk spool keeps growing, bounded by `SPOOL_MAX_BYTES`
-  (default 50 MB). Once full, new events are rejected (`503`), and since COM
-  never retries a failed delivery, those events are lost. A single bridge has
-  no built-in way to add worker concurrency (one SQLite spool, one writer).
-- **Shim**: messages queue up in the durable cloud queue instead, safely, but
-  consumer lag grows. Running additional shim replicas against the same queue
-  (Service Bus/SQS both support multiple consumers) adds real concurrency here.
-
-Splitting monitored conditions across separate deployments (see
-[Splitting monitors across multiple deployments](#splitting-monitors-across-multiple-deployments))
-also isolates this: a slow analyzer call for one condition then only stalls
-that deployment's worker, not delivery for every other condition.
-
-A ready-to-run analyzer for it, the [AI Gateway](https://github.com/jullienl/ai-gateway) (a separate, standalone repo): it can run on **GitHub Copilot, OpenAI, or Anthropic**, picked per request, so it fits whichever of those you already have rather than requiring a new subscription. Any service that implements the same small HTTP contract works in its place, see [bring your own model](https://github.com/jullienl/ai-gateway#no-github-copilot-license-bring-your-own-model) for a minimal analyzer built on any other provider.
-
-→ **[AI analysis enrichment](com-event-core/README.md#ai-analysis-enrichment)** in `com-event-core` is the full write-up: enabling `ENRICHERS=ilo_ai` or `ENRICHERS=hpe_advisories,ilo_ai`, running the gateway, the exact fields returned, and what shows up in the ticket.
+When `ENRICHERS=ilo_ai`, the on-premises Shim or Bridge collects a bounded set
+of Redfish evidence from the affected server and sends it with the COM event to
+the configured analyzer. The analyzer returns the summary, likely root cause,
+confidence, and recommended actions that adapters can include in the ticket,
+issue, or notification.
 
 <img src="docs/images/ai-assisted-investigation-diagram.png" alt="AI-assisted incident investigation and remediation sequence diagram" />
 
-### Customer Advisories enrichment flow
+See the **[AI analysis enrichment](com-event-core/README.md#ai-analysis-enrichment)**
+section for the full flow, configuration, analyzer contract, returned fields,
+and delivery behavior. Use `ENRICHERS=ilo_ai,hpe_advisories` when the analysis
+should also receive HPE Customer Advisory context.
 
-The CA-aware flow resolves the firmware bundle and advisory data through COM
-before sending the combined event, Redfish, and advisory evidence to the AI
-gateway.
+
+### AI enrichment with HPE Customer Advisories
+
+When HPE Customer Advisory enrichment is enabled using  `ENRICHERS=ilo_ai,hpe_advisories`, the on-premises Shim or
+Bridge retrieves the server's firmware bundle and related advisory data from
+COM. It then combines that context with the COM event and bounded Redfish
+evidence before sending the complete package to the AI Gateway for analysis.
 
 <img src="docs/images/ai-assisted-investigation-with-CAs-diagram.png" alt="AI-assisted incident investigation with Customer Advisories enrichment" />
 
@@ -569,6 +514,15 @@ Three raise events, each with a different injected hardware fault, delivered wit
 | Slack — power fault | Teams — memory fault | Jira — cooling fault |
 |---|---|---|
 | <img src="docs/images/slack-power-AI-analysis.png" alt="Slack message with AI analysis for a power fault" width="280" /> | <img src="docs/images/teams-memory-AI-analysis.png" alt="Teams message with AI analysis for a memory fault" width="280" /> | <img src="docs/images/jira-cooling-AI-analysis.png" alt="Jira issue with AI analysis for a cooling fault" width="280" /> |
+
+
+### AI enrichment operations
+
+AI enrichment is fail-open and optional. Detailed behavior for analyzer outages,
+Redfish collection failures, timeouts, caching, budget limits, worker latency,
+queue or spool backpressure, and condition-level isolation is documented in the
+[AI analysis enrichment guide](com-event-core/README.md#ai-analysis-enrichment).
+
 
 ---
 
@@ -586,7 +540,7 @@ Use the native integration when:
 
 Use this framework when you need capabilities such as:
 
-- **no inbound firewall port into the customer environment**
+- **no inbound firewall port into your environment**
 - durable buffering and retry
 - custom payload transformation or enrichment
 - de-duplication

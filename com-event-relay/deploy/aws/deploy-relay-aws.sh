@@ -8,7 +8,7 @@
 # Prerequisites: AWS CLI configured (aws configure), Docker (for the image
 # mirror), an IAM instance role for App Runner allowing sqs:SendMessage, and an
 # App Runner ECR access role (AWSAppRunnerServicePolicyForECRAccess).
-# Usage: IMAGE=<ecr-uri> ACCESS_ROLE_ARN=<role> INSTANCE_ROLE_ARN=<role> ./deploy-relay-aws.sh
+# Usage: IMAGE=<ecr-uri>:1.0.0 ACCESS_ROLE_ARN=<role> INSTANCE_ROLE_ARN=<role> ./deploy-relay-aws.sh
 #
 set -euo pipefail
 
@@ -16,8 +16,8 @@ set -euo pipefail
 REGION="${AWS_REGION:-eu-west-1}"
 QUEUE="${QUEUE:-com-events}"
 APP_NAME="${APP_NAME:-com-event-relay}"
-GHCR_IMAGE="${GHCR_IMAGE:-ghcr.io/jullienl/com-event-relay:latest}"   # upstream (published by CI)
-IMAGE="${IMAGE:?Set IMAGE to your private ECR URI, e.g. <acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:latest}"
+GHCR_IMAGE="${GHCR_IMAGE:-ghcr.io/jullienl/com-event-relay:1.0.0}"   # upstream (published by CI)
+IMAGE="${IMAGE:?Set IMAGE to your private ECR URI, e.g. <acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:1.0.0}"
 SHARED_SECRET_HEADER="${SHARED_SECRET_HEADER:-x-shim-secret}"
 SECRET="${SECRET:-$(openssl rand -hex 32)}"
 INSTANCE_ROLE_ARN="${INSTANCE_ROLE_ARN:?Set INSTANCE_ROLE_ARN to an IAM role ARN allowing sqs:SendMessage}"

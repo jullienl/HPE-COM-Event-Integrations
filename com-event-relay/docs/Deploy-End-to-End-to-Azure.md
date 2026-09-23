@@ -43,15 +43,10 @@ COM    ──webhook──►   [ RELAY on Azure Container Apps ]  ──►  Az
 
 ## 0. Prerequisites
 
-- **This repo cloned locally** — needed **only** for the deploy **script**
-  (Option A), the **synthetic-event test** (step 6, Path B), or running the shim
-  **directly with Python** (step 5). The **Docker** shim and the manual
-  walkthrough with a **real COM event** don't need it (they pull the published
-  image and read env vars only):
-  ```powershell
-  git clone https://github.com/jullienl/HPE-COM-Event-Integrations.git
-  cd HPE-COM-Event-Integrations
-  ```
+- **Operator path:** no repository checkout is required. This runbook uses
+  published GHCR images and configuration values.
+- **Optional checkout:** only needed if you choose the helper script, synthetic
+  event test, or direct Python development path later in this runbook.
 - **Azure CLI installed**, then logged in to the target subscription. If `az` isn't
   already on the machine, install it first (see
   [Install the Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)):
@@ -154,7 +149,7 @@ $SB_NS   = "sbcomrelay$([System.Random]::new().Next(10000,99999))"   # Service B
 $QUEUE   = "com-events"                                              # Service Bus queue name; the relay and shim must both use this value
 $ACA_ENV = "aca-com-relay"                                           # Azure Container Apps environment (the shared host for the relay app)
 $APP     = "com-event-relay"                                         # Container App name for the relay
-$IMAGE   = "ghcr.io/jullienl/com-event-relay:latest"                 # relay container image pulled by Azure (published by CI to GHCR)
+$IMAGE   = "ghcr.io/jullienl/com-event-relay:1.0.0"                 # relay container image pulled by Azure (published by CI to GHCR)
 $HDR     = "x-shim-secret"                                           # HTTP header COM sends carrying the shared secret (auth on every POST)
 
 # 32-byte (64 hex char) shared secret, no openssl needed on Windows:
@@ -261,7 +256,7 @@ $FQDN = az containerapp show --resource-group $RG --name $APP `
 > always answered fast.
 
 > **Which image?** This runbook uses the project's prebuilt relay image
-> `ghcr.io/jullienl/com-event-relay:latest` — it's public and already contains
+> `ghcr.io/jullienl/com-event-relay:1.0.0` — it's public and already contains
 > everything (handshake, secret check, queue publisher), so **just use it**; that's
 > the whole point. You only need your own image if you've forked and changed the
 > relay code. In that case, if your fork's package is **private**, add registry
@@ -507,7 +502,7 @@ docker run --rm --name com-event-shim `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:latest
+  ghcr.io/jullienl/com-event-shim:1.0.0
 ```
 
 The shim logs each message it drains, the events it normalises, and the forward
@@ -552,7 +547,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:latest
+  ghcr.io/jullienl/com-event-shim:1.0.0
 ```
 
 > **Secrets from files (vault) — recommended for production.** Every sensitive
@@ -575,7 +570,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
 >   -e GITHUB_REPO=your-org/com-issues `
 >   -e GITHUB_TOKEN_FILE=/run/secrets/github-token `
 >   -e SERVER_MONITORS=health `
->   ghcr.io/jullienl/com-event-shim:latest
+>   ghcr.io/jullienl/com-event-shim:1.0.0
 > ```
 >
 > On **Kubernetes** mount an Azure Key Vault secret via the **Secrets Store CSI
@@ -772,7 +767,7 @@ state all come straight from the two fixtures above.
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | COM won't enable the webhook | Handshake failed | Confirm `GET /com/webhook` echoes the challenge over **public HTTPS** with a valid cert (step 3). Check the URL has no typo and ends in `/com/webhook`. |
-| `curl` to `/healthz` hangs / **stream timeout** / 0 bytes (but TLS connects) | Relay container **crashed on boot** — TCP+TLS reach the ingress but the app exited before binding `:8080`, so nothing answers | Check the container logs (below): a Python traceback / `ModuleNotFoundError` or a missing required env var means the app never started. Confirm `runningStatus` and that ingress `targetPort` is `8080`. Fix the cause, then roll a new revision (`az containerapp update --image …:latest`). |
+| `curl` to `/healthz` hangs / **stream timeout** / 0 bytes (but TLS connects) | Relay container **crashed on boot** — TCP+TLS reach the ingress but the app exited before binding `:8080`, so nothing answers | Check the container logs (below): a Python traceback / `ModuleNotFoundError` or a missing required env var means the app never started. Confirm `runningStatus` and that ingress `targetPort` is `8080`. Fix the cause, then roll a new revision (`az containerapp update --image …:1.0.0`). |
 | Relay returns `401` | Wrong/missing header | Header **name** must equal `SHARED_SECRET_HEADER` (`x-shim-secret`) and value must equal `$SECRET`. |
 | Relay returns `413` | Body too large | Raise `MAX_BODY_BYTES` on the relay app if you genuinely send large payloads. |
 | Relay returns `503` | Queue unreachable | Check the **send** connection string secret and that the namespace/queue exist; `GET /readyz` should be `200`. |

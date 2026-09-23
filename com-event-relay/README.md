@@ -1,6 +1,6 @@
 # COM Event Relay
 
-A cloud-hosted webhook relay for **HPE Compute Ops Management (COM)** that securely receives COM events, stores them in a durable Azure or AWS queue, and lets an **outbound-only on-premises shim** deliver them to internal ITSM, ITOM, SIEM, ChatOps, incident-response, and observability platforms — **without opening inbound network ports into the customer environment**.
+A cloud-hosted webhook relay for **HPE Compute Ops Management (COM)** that securely receives COM events, stores them in a durable Azure or AWS queue, and lets you run an **outbound-only on-premises shim** that delivers them to internal ITSM, ITOM, SIEM, ChatOps, incident-response, and observability platforms — **without opening inbound network ports into your environment**.
 
 Use this deployment model when you want the public webhook edge hosted in Azure or AWS while keeping the internal target private.
 
@@ -24,17 +24,17 @@ AWS:
 COM -> AWS App Runner -> Amazon SQS -> Shim -> Target
 ```
 
-The customer-side network remains outbound-only:
+Your on-premises network remains outbound-only:
 
 ```text
-Customer network
+Your network
     |
     +--> outbound to Azure Service Bus / AWS SQS
     |
     +--> outbound to target platform
 ```
 
-No inbound connection from COM into the customer environment is required.
+No inbound connection from COM into your environment is required.
 
 ---
 
@@ -115,7 +115,7 @@ This separates **webhook reception** from **target delivery**.
 
 Use `com-event-relay` when:
 
-- no inbound HTTPS path into the customer network is allowed
+- no inbound HTTPS path into your network is allowed
 - you want the public edge hosted as a managed Azure or AWS service
 - queue-backed durability is preferred
 - receive and delivery should be decoupled
@@ -409,9 +409,9 @@ These values determine how long a target can remain unavailable before messages 
 | Shim | Amazon SQS | Outbound | 443 |
 | Shim | Target platform | Outbound | Usually 443 |
 
-No inbound connection into the customer environment is required.
+No inbound connection into your environment is required.
 
-If the customer network only permits HTTPS/443 egress, configure Azure Service Bus clients to use AMQP-over-WebSockets where appropriate.
+If your network only permits HTTPS/443 egress, configure Azure Service Bus clients to use AMQP-over-WebSockets where appropriate.
 
 ---
 
@@ -423,7 +423,7 @@ If the customer network only permits HTTPS/443 egress, configure Azure Service B
 | Durable Queue | Azure Service Bus | Amazon SQS |
 | Secret store | Azure Key Vault | AWS Secrets Manager / SSM Parameter Store |
 | Workload identity | Managed Identity | IAM role |
-| Customer-side queue access | Service Bus consumer | SQS consumer |
+| Your on-premises queue access | Service Bus consumer | SQS consumer |
 | Public TLS | Managed by platform | Managed by platform |
 
 The architecture is cloud-agnostic:
@@ -540,7 +540,7 @@ Typical flow:
 
 1. Create Azure resource group
 2. Create Service Bus namespace + queue
-3. Build/publish Relay image
+3. Deploy the published Relay image
 4. Deploy Relay to Azure Container Apps
 5. Configure secrets / Managed Identity
 6. Start Shim on-prem
@@ -557,7 +557,7 @@ Typical flow:
 
 1. Create SQS queue
 2. Create IAM roles/policies
-3. Build/publish Relay image
+3. Deploy the published Relay image
 4. Deploy Relay to App Runner
 5. Configure secrets
 6. Start Shim on-prem
@@ -566,9 +566,11 @@ Typical flow:
 
 ---
 
-## Local development
+## Developer path: local development
 
-For local smoke testing, the repository also includes container/compose-oriented development paths.
+For contributors and maintainers, the repository also includes
+container/compose-oriented development paths. Customers should use the
+published images and the Azure or AWS deployment runbooks above.
 
 The important architectural rule remains:
 

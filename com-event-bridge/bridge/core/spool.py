@@ -30,10 +30,13 @@ from com_event_core import DedupStore, deliver_events, enrich_events, normalize
 log = logging.getLogger("com-event-bridge.spool")
 
 SPOOL_PATH = os.environ.get("SPOOL_PATH", "./spool.db")
-# Reject new events once the pending backlog exceeds this many bytes, so a
-# prolonged target outage can't fill the disk (handler returns 503 as backpressure;
-# COM does not retry, so an event rejected here is dropped).
+# Reject normal records once the pending backlog exceeds this many bytes.
 SPOOL_MAX_BYTES = int(os.environ.get("SPOOL_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
+# Reserve a separate bounded lane for accepting events without enrichment when
+# the normal backlog is full. Both budgets consume the same durable volume.
+SPOOL_OVERFLOW_MAX_BYTES = int(
+    os.environ.get("SPOOL_OVERFLOW_MAX_BYTES", str(10 * 1024 * 1024))
+)  # 10 MB
 # Base retry delay; grows exponentially per attempt up to SPOOL_RETRY_CAP.
 SPOOL_RETRY_SECONDS = int(os.environ.get("SPOOL_RETRY_SECONDS", "30"))
 SPOOL_RETRY_CAP = int(os.environ.get("SPOOL_RETRY_CAP", "3600"))
@@ -59,39 +62,59 @@ class SpoolStore:
                    properties    TEXT    NOT NULL,
                    enqueued_at   INTEGER NOT NULL,
                    attempts      INTEGER NOT NULL DEFAULT 0,
-                   next_attempt  INTEGER NOT NULL DEFAULT 0
+                   next_attempt  INTEGER NOT NULL DEFAULT 0,
+                   enrich        INTEGER NOT NULL DEFAULT 1
                )"""
         )
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(spool)").fetchall()
+        }
+        if "enrich" not in columns:
+            self._conn.execute(
+                "ALTER TABLE spool ADD COLUMN enrich INTEGER NOT NULL DEFAULT 1"
+            )
         self._conn.commit()
 
     def put(self, body: bytes, properties: dict[str, str]) -> int:
-        """Persist a raw event. Raises SpoolFull if the backlog is over budget."""
+        """Persist a normal event. Raises SpoolFull if its backlog is over budget."""
+        return self._put(body, properties, enrich=True)
+
+    def put_overflow(self, body: bytes, properties: dict[str, str]) -> int:
+        """Persist an unenriched event in the bounded overflow lane."""
+        return self._put(body, properties, enrich=False)
+
+    def _put(self, body: bytes, properties: dict[str, str], *, enrich: bool) -> int:
+        """Persist a raw event in either the normal or overflow lane."""
         now = int(time.time())
+        max_bytes = self._max_bytes if enrich else SPOOL_OVERFLOW_MAX_BYTES
+        lane = 1 if enrich else 0
         with self._lock:
             pending = self._conn.execute(
-                "SELECT COALESCE(SUM(LENGTH(body)), 0) FROM spool"
+                "SELECT COALESCE(SUM(LENGTH(body)), 0) FROM spool WHERE enrich = ?",
+                (lane,),
             ).fetchone()[0]
-            if pending + len(body) > self._max_bytes:
-                raise SpoolFull(f"spool backlog {pending} + {len(body)} > {self._max_bytes}")
+            if pending + len(body) > max_bytes:
+                lane_name = "spool" if enrich else "overflow spool"
+                raise SpoolFull(f"{lane_name} backlog {pending} + {len(body)} > {max_bytes}")
 
             cur = self._conn.execute(
-                "INSERT INTO spool (body, properties, enqueued_at, next_attempt) "
-                "VALUES (?, ?, ?, ?)",
-                (body, json.dumps(properties), now, now),
+                "INSERT INTO spool (body, properties, enqueued_at, next_attempt, enrich) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (body, json.dumps(properties), now, now, lane),
             )
             self._conn.commit()
             return int(cur.lastrowid)
 
-    def claim_due(self, now: int) -> tuple[int, bytes, int] | None:
-        """Return (id, body, attempts) for the oldest event whose retry time has
+    def claim_due(self, now: int) -> tuple[int, bytes, int, bool] | None:
+        """Return (id, body, attempts, enrich) for the oldest event whose retry time has
         arrived, or None if nothing is due."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, body, attempts FROM spool WHERE next_attempt <= ? "
+                "SELECT id, body, attempts, enrich FROM spool WHERE next_attempt <= ? "
                 "ORDER BY id ASC LIMIT 1",
                 (now,),
             ).fetchone()
-            return (int(row[0]), row[1], int(row[2])) if row else None
+            return (int(row[0]), row[1], int(row[2]), bool(row[3])) if row else None
 
     def delete(self, row_id: int) -> None:
         with self._lock:
@@ -139,14 +162,14 @@ class SpoolWorker(threading.Thread):
                 self._stop.wait(SPOOL_POLL_SECONDS)
                 continue
 
-            row_id, body, attempts = claimed
+            row_id, body, attempts, should_enrich = claimed
             try:
                 events = normalize(json.loads(body.decode("utf-8")))
 
                 # Enrich before delivery so every adapter renders the analysis.
                 # Never raises — a failed enrichment delivers the event as-is,
                 # so a slow or broken analyzer cannot stall the spool drain.
-                enrich_events(events, self._enrichers)
+                enrich_events(events, self._enrichers if should_enrich else ())
 
                 # Fan-out every derived event to every adapter. deliver_events()
                 # skips targets already done for an event and raises if any

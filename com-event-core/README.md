@@ -154,21 +154,7 @@ The normaliser currently handles two COM resource families plus a generic fallba
 
 For a server event, `power`, `connection`, and `subscription` are **not separate resource types**.
 
-They are conditions contained inside the same server snapshot:
-
-```text
-compute-ops-mgmt/server
-        |
-        +--> health
-        +--> power
-        +--> connection
-        +--> subscription
-```
-
-The normaliser can emit one `CanonicalEvent` per enabled condition.
-
----
-
+<a id="com-webhook-filters-and-raise--clear-lifecycle"></a>
 # COM webhook filters and raise / clear lifecycle
 
 For stateful targets, a complete lifecycle requires both:
@@ -179,21 +165,11 @@ recovery transition -> clear
 ```
 
 COM webhook filtering occurs before the event reaches the Relay or Bridge.
-
-This means that, for each monitored server transition, you normally configure **two COM webhooks**:
-
-1. one webhook for the problem transition
-2. one webhook for the recovery transition
-
-Both webhooks point to the **same Relay or Bridge endpoint**.
-
-The receiver and `com-event-core` then convert those COM snapshots into correlated raise and clear events.
-
----
+For each monitored server transition, configure two COM webhooks: one for the
+problem transition and one for the recovery transition. Both should point to
+the same Relay or Bridge endpoint.
 
 ## Namespace note
-
-There is an important namespace difference between COM webhook filters and delivered payloads.
 
 COM `eventFilter` expressions use the shorter namespace:
 
@@ -202,31 +178,14 @@ compute-ops/server
 compute-ops/alert
 ```
 
-The delivered webhook payload uses:
+Delivered webhook payloads use:
 
 ```text
 compute-ops-mgmt/server
 compute-ops-mgmt/alert
 ```
 
-For example:
-
-```text
-eventFilter:
-type eq 'compute-ops/server'
-```
-
-but the received JSON contains:
-
-```json
-{
-  "type": "compute-ops-mgmt/server"
-}
-```
-
-The normaliser matches the resource type by suffix (`.../server`, `.../alert`), so either namespace spelling is safely recognised during normalisation.
-
----
+The normaliser recognizes both forms by resource-type suffix.
 
 ## Server health
 
@@ -236,37 +195,25 @@ Enable health monitoring with:
 SERVER_MONITORS=health
 ```
 
-`health` is the default if `SERVER_MONITORS` is not configured.
+`health` is the default when `SERVER_MONITORS` is not configured.
 
-### Raise — health leaves OK
+### Raise - health leaves OK
 
 ```text
 type eq 'compute-ops/server' and old/hardware/health/summary eq 'OK' and changed/hardware/health/summary eq True
 ```
 
-### Clear — health returns to OK
+### Clear - health returns to OK
 
 ```text
 type eq 'compute-ops/server' and new/hardware/health/summary eq 'OK' and changed/hardware/health/summary eq True
 ```
 
-The normalised lifecycle is:
+Correlation key:
 
 ```text
-health != OK
-     |
-     v
-action = raise
-correlation_key = server:<serial>:health
-
-health returns to OK
-     |
-     v
-action = clear
-correlation_key = server:<serial>:health
+server:<serial>:health
 ```
-
----
 
 ## Server power
 
@@ -282,13 +229,13 @@ or:
 SERVER_MONITORS=health,power
 ```
 
-### Raise — server powers off
+### Raise - server powers off
 
 ```text
 type eq 'compute-ops/server' and old/hardware/powerState eq 'ON' and changed/hardware/powerState eq True
 ```
 
-### Clear — server powers back on
+### Clear - server powers back on
 
 ```text
 type eq 'compute-ops/server' and new/hardware/powerState eq 'ON' and changed/hardware/powerState eq True
@@ -872,6 +819,14 @@ supplied data and say so plainly when data is missing. See
 [The analyzer contract](#the-analyzer-contract) for the exact fields, and
 [agents.py](https://github.com/jullienl/ai-gateway/blob/main/agents.py) for the prompt that produces them.
 
+The primary supported analyzer for this project is the standalone
+[AI Gateway](https://github.com/jullienl/ai-gateway). Deploy its published image
+and follow the [AI Gateway Operator Guide](https://github.com/jullienl/ai-gateway/blob/main/GUIDE.md)
+for provider credentials, model selection, TLS, and deployment. The gateway
+owns the agent prompts, including `com-rca`; this project owns the payload and
+response contract described below. A different analyzer can be used when it
+implements the same contract.
+
 ## Enable it with `ENRICHERS`, not `TARGETS`
 
 The CA-aware flow resolves firmware-bundle advisory evidence through COM and
@@ -911,12 +866,12 @@ bridge.
 
 | Component | Hosts it? | Why |
 |---|:---:|---|
-| Shim (on-prem) | ✅ | On the customer network; can reach the BMC subnet |
+| Shim (on-prem) | ✅ | On your network; can reach the BMC subnet |
 | Bridge (on-prem) | ✅ | Same |
 | Relay (cloud) | ❌ | No iLO reachability |
 
 The shim/bridge opens an **additional outbound** connection to the management
-network. No inbound port into the customer network is opened, so the project's
+network. No inbound port into your network is opened, so the project's
 outbound-only property is unchanged.
 
 ## The `ilo_ai` enricher
@@ -1017,40 +972,30 @@ Stand up a service that implements [the contract above](#the-analyzer-contract)
 and that the shim or bridge can reach over HTTP. It needs no inbound access from
 the internet and no access to COM — only the shim or bridge calls it.
 
-A standalone repo ships one such service: [AI Gateway](https://github.com/jullienl/ai-gateway),
-which fronts a GitHub Copilot entitlement (and speaks OpenAI/Anthropic natively
-too) and already exposes the `com-rca` agent used by default. The walkthrough
-below wires it to either consumer — *"the shim or bridge"* means whichever of
-the two you run. Any other service that implements the contract works too,
-nothing here is gateway-specific.
+One available service is the standalone [AI Gateway](https://github.com/jullienl/ai-gateway),
+which exposes the `com-rca` agent used by default. It supports GitHub Copilot,
+OpenAI, Anthropic, and customer-hosted OpenAI-compatible models. Any other
+service that implements the contract works too; nothing here is gateway-specific.
 
-#### Get a Copilot PAT
+#### Choose analyzer credentials
 
-Copilot has no shared service token; it is licensed per named user. Create a
-**fine-grained personal access token** on an account that has Copilot enabled,
-and keep it somewhere the gateway can mount it as a file. If your organization
-routes personal and enterprise Copilot accounts differently, use the
-**enterprise/business** account — a personal account may be unable to reach
-the model API from a corporate network.
+Copilot is one provider option. OpenAI, Anthropic, and an on-premises
+OpenAI-compatible model are also supported. Follow the [AI Gateway Operator
+Guide](https://github.com/jullienl/ai-gateway/blob/main/GUIDE.md) for the
+provider-specific credentials and deployment configuration.
 
-#### Run the gateway
+For the Copilot option, create a **fine-grained personal access token** on an
+account that has Copilot enabled, and keep it somewhere the AI Gateway can mount
+it as a file. If your organization routes personal and enterprise Copilot
+accounts differently, use the enterprise/business account.
 
-The shim or bridge must be able to reach it over HTTP. Pick the option that
-matches where that consumer runs, then confirm it's up before step 3.
+#### Run the AI gateway
 
-**Option A — local, for a first test:**
+The shim or bridge must be able to reach the analyzer over HTTP or HTTPS. For
+deployment, use the published image and the operator instructions in
+the [AI Gateway Guide](https://github.com/jullienl/ai-gateway/blob/main/GUIDE.md).
 
-```powershell
-git clone https://github.com/jullienl/ai-gateway.git
-cd ai-gateway
-pip install -r requirements.txt
-uvicorn app:app --host 127.0.0.1 --port 8000
-```
-
-Locally the SDK reuses your existing `gh` / Copilot CLI login, so no token is
-needed.
-
-**Option B — as a container, next to the shim or bridge:**
+**Run the published image next to the shim or bridge:**
 
 Vault the PAT on the host first — never bake it into the image or pass it as a
 plain `-e COPILOT_GITHUB_TOKEN=...` where you can avoid it (that's the
@@ -1068,12 +1013,8 @@ image, `docker inspect`, or shell history. `/run/secrets` is `tmpfs` on most
 distros, so the plaintext doesn't survive a reboot either — recreate it from
 your vault/password manager when the host restarts.
 
-Build the image once, from a clone of the gateway repo:
-
 ```bash
-git clone https://github.com/jullienl/ai-gateway.git
-cd ai-gateway
-docker build -t ai-gateway:1.0.1 .
+docker pull ghcr.io/jullienl/ai-gateway:1.0.2
 ```
 
 Then join it to the same network the shim/bridge already runs on, so it's
@@ -1084,7 +1025,7 @@ service next to the shim/bridge:
 # docker-compose.yml
 services:
   ai-gateway:
-    image: ai-gateway:1.0.1
+    image: ghcr.io/jullienl/ai-gateway:1.0.2
     container_name: ai-gateway
     ports:
       - "8000:8000"
@@ -1103,7 +1044,7 @@ secrets:
 ```
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 Or with plain `docker run`:
@@ -1112,13 +1053,13 @@ Or with plain `docker run`:
 docker run -d --name ai-gateway --network com-events -p 8000:8000 \
   -v /run/secrets/copilot_pat:/run/secrets/copilot_pat:ro \
   -e COPILOT_GITHUB_TOKEN_FILE=/run/secrets/copilot_pat \
-  ai-gateway:1.0.1
+  ghcr.io/jullienl/ai-gateway:1.0.2
 ```
 
 Either way, the token is read **file-first** so it does not appear in
 `docker inspect` or `/proc/<pid>/environ`.
 
-On a network that inspects TLS, the gateway also needs your corporate CA
+On a network that inspects TLS, the AI gateway also needs your corporate CA
 bundle — it makes its own outbound HTTPS call to the model API and will
 otherwise fail with a certificate error. The bundle must contain the internal
 CA **plus** the public roots, `SSL_CERT_FILE` *replaces* the trust store
@@ -1130,7 +1071,7 @@ has the recipe, then mount the result and set `SSL_CERT_FILE` /
 
 **Option C — Azure Container Apps:**
 
-See the gateway's
+See the AI gateway's
 [GUIDE.md §10](https://github.com/jullienl/ai-gateway/blob/main/GUIDE.md#10-deploying-to-azure-container-apps-primary-path).
 Use **internal** ingress; the shim or bridge then reaches it by app name
 (`http://ai-gateway`) if it runs in the same environment.
@@ -1142,7 +1083,7 @@ curl http://<gateway-host>:8000/health
 curl http://<gateway-host>:8000/agents    # com-rca must be listed
 ```
 
-No GitHub Copilot license? The gateway's
+No GitHub Copilot license? the AI gateway's
 [Bring your own model](https://github.com/jullienl/ai-gateway#no-github-copilot-license-bring-your-own-model)
 section is a minimal analyzer built on OpenAI/Anthropic/any other provider
 instead — point `AI_ANALYZER_URL` at it the same way.
@@ -1206,11 +1147,11 @@ If analysis is missing, the log says why, it never fails the delivery:
 
 | Log line | Cause |
 | --- | --- |
-| `enrichment by ilo_ai failed: …` | The iLO or the gateway could not be reached, or the analysis errored |
+| `enrichment by ilo_ai failed: …` | The iLO or the AI gateway could not be reached, or the analysis errored |
 | `no mgmt_url on event <id> …` | An alert-sourced event, which carries no iLO address |
 | `AI analysis budget exhausted …` | An hourly or daily cap was reached — see [What gets analysed, and what it costs](#what-gets-analysed-and-what-it-costs) |
 
-When the failure came from the gateway, its status code narrows it down:
+When the failure came from the AI gateway, its status code narrows it down:
 
 | Status | Meaning |
 | --- | --- |
@@ -1270,6 +1211,23 @@ Analysis is an enhancement, so no analyzer problem can delay or lose an event.
 > it. The bridge **refuses to start** with `ENRICHERS` set and
 > `DELIVERY_MODE=sync`. Use `spool` (the bridge default) or the relay + queue.
 
+## Analyzer failures and partial evidence
+
+AI enrichment is fail-open and is not required for event delivery:
+
+- If the iLO is unreachable or its credentials are invalid, the event is
+  delivered without an AI report.
+- If an individual Redfish resource is missing or fails, the remaining evidence
+  can still be sent to the analyzer.
+- If the analyzer is unavailable, times out, or returns invalid output, the
+  event is delivered without AI enrichment.
+- If the analyzer returns only some fields, adapters render only those fields.
+  Missing report fields are omitted rather than emitted as empty sections.
+
+This prevents an iLO outage, credential problem, or analyzer outage from
+blocking the underlying COM event or creating a delivery retry loop. The
+enrichment logs the reason for every skipped or failed analysis.
+
 ## Latency, throughput, and concurrency
 
 `enrich_events()` is called **synchronously, inline, one event at a time**, by
@@ -1323,14 +1281,13 @@ If the analyzer is slow rather than fully down, the worker still spends up to
 `AI_TIMEOUT` seconds per raise event, so the backlog can grow faster than it
 drains:
 
-- **Bridge**: the spool (a single SQLite file, single writer) keeps
-  accumulating, bounded by `SPOOL_MAX_BYTES` (default 50 MB in
-  `com-event-bridge/bridge/core/spool.py`). Once full, `SpoolStore.put()`
-  raises `SpoolFull`, the HTTP handler returns `503`, and since COM never
-  retries a failed webhook delivery, that specific event is lost, not
-  because *delivery* failed, but because the backlog couldn't drain fast
-  enough to make room for it. A single bridge process has no built-in way to
-  add worker concurrency: there is one spool file and one drain thread.
+- **Bridge**: the spool uses a single SQLite file and writer. The normal
+  enriched backlog is bounded by `SPOOL_MAX_BYTES` (default 50 MB). If it
+  fills, `SpoolStore.put_overflow()` accepts the event in a separate bounded
+  lane, returns `202`, and the worker delivers it without enrichment. Only when
+  both lanes are full does the handler return `503`; COM does not retry that
+  rejected event. A single bridge process has no built-in way to add worker
+  concurrency: there is one spool file and one drain thread.
 - **Shim**: messages simply accumulate in the durable cloud queue (Azure
   Service Bus or AWS SQS) instead, safely, with no size cap of this kind, but
   with growing consumer lag. Both queue backends support multiple concurrent
@@ -1593,8 +1550,8 @@ access to every server. In value order:
   bridge host.
 - **Rotation** — have a story for rolling the fleet credential before you need it.
 
-**Privacy.** iLO telemetry (serials, hostnames, IPs, IML text) leaving the
-customer network to a hosted model is a real enterprise review item. The
+**Privacy.** iLO telemetry (serials, hostnames, IPs, IML text) leaving your
+network to a hosted model is a real enterprise review item. The
 self-hosted analyzer backend is the answer where that matters.
 
 ## The COM credential (client secret / PAT)
@@ -1692,7 +1649,7 @@ Then mount it into the container (shim or bridge):
 docker run -d --name com-event-shim --restart unless-stopped `
   -v "$env:USERPROFILE\.com-event\corp-ca-bundle.pem:/etc/ssl/certs/corp-ca.pem:ro" `
   -e SSL_CERT_FILE=/etc/ssl/certs/corp-ca.pem `
-  ghcr.io/jullienl/com-event-shim:latest
+  ghcr.io/jullienl/com-event-shim:1.0.0
 ```
 
 Compose (bridge):

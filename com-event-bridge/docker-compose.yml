@@ -9,12 +9,7 @@
 
 services:
   bridge:
-    build:
-      # Context is the repo root (..) so the image can include the sibling
-      # com-event-core package and is fully self-contained.
-      context: ..
-      dockerfile: com-event-bridge/bridge/Dockerfile
-    image: com-event-bridge:local
+    image: ghcr.io/jullienl/com-event-bridge:1.0.0
     env_file: ./bridge/.env
     expose:
       - "8080"            # internal only; not published to the host

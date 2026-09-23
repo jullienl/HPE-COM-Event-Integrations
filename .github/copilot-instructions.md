@@ -2,6 +2,17 @@
 
 Concise, rule-shaped guidance for working in this repo. Keep additions terse.
 
+## Customer-facing documentation and image publication
+
+- **Customer docs first:** README and public guides target operators and
+  customers. Show how to use the published container image before any source
+  build or image-publishing procedure.
+- **Maintainer procedures stay private:** source builds, GHCR publishing,
+  release-tag mechanics, and registry troubleshooting belong in the ignored
+  `docs/Private/` maintainer documentation, not in public customer guides.
+- **Do not publish private runbooks:** keep maintainer-only material under
+  `docs/Private/`, which is intentionally excluded from the public repository.
+
 ## COM webhook delivery semantics (critical)
 
 Verified against HPE docs (developer.greenlake.hpe.com → compute-ops-mgmt →
@@ -836,7 +847,7 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   not open editor buffers; the filesystem is not the whole state.
 - **Labelling a duplicated block "Reference —" does NOT stop it drifting; verify
   it against the running system.** The HOL runbook carried a "Reference — system
-  instruction" and "Reference — expected `result` schema" for the gateway's
+  instruction" and "Reference — expected `result` schema" for the AI gateway's
   `com-rca` agent, explicitly noting the real ones "live server-side in
   agents.py". Both had drifted into fiction: the deployed agent returns
   `summary` / `likely_root_cause` / `evidence` / `confidence` (**a number 0–1**)
@@ -879,7 +890,7 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   replaced design.** The iLO runbook's Phase 6 configured n8n (AI "tools" like
   `get_server_health`, a system prompt, a JSON schema) even though the shipped
   pipeline fetches a FIXED evidence bundle and the prompt lives server-side in
-  the gateway's agent registry. Because the section sat in a doc nobody edits
+  the AI gateway's agent registry. Because the section sat in a doc nobody edits
   when changing the workflow, it survived the redesign and now reads as
   authoritative instructions for building something that does not exist. Rule:
   each doc owns one layer (infrastructure vs. workflow); when a section is
@@ -1312,7 +1323,7 @@ webhooks: Prerequisites + Getting Started Guide → "Status changes").
   request times out) does not apply when a start script scales up and warms
   **before** the lab instead of during it.
 - **`--min-replicas 0` does NOT reliably stop the bill, and the failure is
-  invisible.** Measured: six simulators and the gateway drained in ~10 min, but
+  invisible.** Measured: six simulators and the AI gateway drained in ~10 min, but
   **n8n stayed at one `Running` replica indefinitely** (polled every 60s for
   10 min; `cooldownPeriod: 300`, `rules: null`). One persistent connection — an
   open n8n editor tab is enough — holds the HTTP scaler above zero. The app
