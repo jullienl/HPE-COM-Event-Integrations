@@ -492,11 +492,13 @@ issue, or notification.
 
 <img src="docs/images/ai-assisted-investigation-diagram.png" alt="AI-assisted incident investigation and remediation sequence diagram" />
 
-See the **[AI analysis enrichment](com-event-core/README.md#ai-analysis-enrichment)**
-section for the full flow, configuration, analyzer contract, returned fields,
-and delivery behavior. Use `ENRICHERS=ilo_ai,hpe_advisories` when the analysis
-should also receive HPE Customer Advisory context.
+#### What it looks like
 
+Three raise events, each with a different injected hardware fault, delivered with their AI analysis attached at creation:
+
+| Slack — power fault | GitHub — memory fault | Jira — cooling fault |
+|---|---|---|
+| <img src="docs/images/slack-power-AI-analysis.png" alt="Slack message with AI analysis for a power fault" width="280" /> | <img src="docs/images/github-memory-AI-analysis.png" alt="GitHub issue with AI analysis for a memory fault" width="280" /> | <img src="docs/images/jira-cooling-AI-analysis.png" alt="Jira issue with AI analysis for a cooling fault" width="280" /> |
 
 ### AI enrichment with HPE Customer Advisories
 
@@ -507,21 +509,21 @@ evidence before sending the complete package to the AI Gateway for analysis.
 
 <img src="docs/images/ai-assisted-investigation-with-CAs-diagram.png" alt="AI-assisted incident investigation with Customer Advisories enrichment" />
 
-### What it looks like
+#### What it looks like
 
-Three raise events, each with a different injected hardware fault, delivered with their AI analysis attached at creation:
+GitHub issue example: AI-assisted incident investigation with HPE Customer Advisory enrichment
 
-| Slack — power fault | Teams — memory fault | Jira — cooling fault |
-|---|---|---|
-| <img src="docs/images/slack-power-AI-analysis.png" alt="Slack message with AI analysis for a power fault" width="280" /> | <img src="docs/images/teams-memory-AI-analysis.png" alt="Teams message with AI analysis for a memory fault" width="280" /> | <img src="docs/images/jira-cooling-AI-analysis.png" alt="Jira issue with AI analysis for a cooling fault" width="280" /> |
+<img src="docs/images/github-CA-AI-analysis.png" alt="GitHub issue with AI-assisted incident investigation with Customer Advisories enrichment" width="280" />
 
 
-### AI enrichment operations
+### To learn more
 
-AI enrichment is fail-open and optional. Detailed behavior for analyzer outages,
-Redfish collection failures, timeouts, caching, budget limits, worker latency,
-queue or spool backpressure, and condition-level isolation is documented in the
-[AI analysis enrichment guide](com-event-core/README.md#ai-analysis-enrichment).
+AI enrichment is fail-open and optional. The [AI analysis enrichment guide](com-event-core/README.md#ai-analysis-enrichment)
+covers the full flow, configuration, analyzer contract, returned fields, and
+delivery behavior, including analyzer outages, Redfish failures, timeouts,
+caching, budget limits, worker latency, queue or spool backpressure, and
+condition-level isolation. Use `ENRICHERS=ilo_ai,hpe_advisories` when the
+analysis should also receive HPE Customer Advisory context.
 
 
 ---

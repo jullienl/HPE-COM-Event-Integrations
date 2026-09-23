@@ -494,7 +494,7 @@ Therefore:
 
 > Treat a single persistent Shim instance as the simplest supported operational model unless you deliberately design and validate multi-consumer state behavior.
 
-If horizontal Shim scaling is required, consider moving de-duplication state to a shared backend as a future enhancement.
+Horizontal Shim scaling requires a shared de-duplication backend, which is a future enhancement.
 
 ---
 
