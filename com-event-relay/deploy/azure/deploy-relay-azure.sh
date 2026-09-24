@@ -14,6 +14,9 @@ RG="${RG:-rg-com-relay}"
 LOC="${LOC:-westeurope}"
 SB_NS="${SB_NS:-sbcomrelay$RANDOM}"
 QUEUE="${QUEUE:-com-events}"
+SB_LOCK_DURATION="${SB_LOCK_DURATION:-PT5M}"
+SB_MAX_DELIVERY_COUNT="${SB_MAX_DELIVERY_COUNT:-10}"
+SB_MESSAGE_TTL="${SB_MESSAGE_TTL:-P14D}"
 ACA_ENV="${ACA_ENV:-aca-com-relay}"
 APP_NAME="${APP_NAME:-com-event-relay}"
 IMAGE="${IMAGE:-ghcr.io/jullienl/com-event-relay:1.0.0}"
@@ -29,13 +32,22 @@ az group create --name "$RG" --location "$LOC" -o none
 az servicebus namespace create --resource-group "$RG" --name "$SB_NS" \
   --location "$LOC" --sku Standard -o none
 az servicebus queue create --resource-group "$RG" --namespace-name "$SB_NS" \
-  --name "$QUEUE" -o none
+  --name "$QUEUE" \
+  --lock-duration "$SB_LOCK_DURATION" \
+  --max-delivery-count "$SB_MAX_DELIVERY_COUNT" \
+  --default-message-time-to-live "$SB_MESSAGE_TTL" \
+  --enable-dead-lettering-on-message-expiration true -o none
 az servicebus queue authorization-rule create --resource-group "$RG" \
   --namespace-name "$SB_NS" --queue-name "$QUEUE" --name relay-send --rights Send -o none
+az servicebus queue authorization-rule create --resource-group "$RG" \
+  --namespace-name "$SB_NS" --queue-name "$QUEUE" --name shim-listen --rights Listen -o none
 
 SB_SEND_CONN="$(az servicebus queue authorization-rule keys list \
   --resource-group "$RG" --namespace-name "$SB_NS" --queue-name "$QUEUE" \
   --name relay-send --query primaryConnectionString -o tsv)"
+SB_LISTEN_CONN="$(az servicebus queue authorization-rule keys list \
+  --resource-group "$RG" --namespace-name "$SB_NS" --queue-name "$QUEUE" \
+  --name shim-listen --query primaryConnectionString -o tsv)"
 
 # ---- Container Apps environment + app -------------------------------------
 az extension add --name containerapp --upgrade -o none 2>/dev/null || true
@@ -64,5 +76,6 @@ echo " Relay deployed."
 echo " Webhook URL:  https://$FQDN/com/webhook"
 echo " Shared secret ($SHARED_SECRET_HEADER): $SECRET"
 echo " Service Bus:  $SB_NS / queue '$QUEUE'"
+echo " Shim listen connection: $SB_LISTEN_CONN"
 echo "==================================================================="
 echo " Configure the COM webhook with the URL and the shared-secret header."

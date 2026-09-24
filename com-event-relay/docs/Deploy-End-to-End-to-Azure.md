@@ -43,10 +43,10 @@ COM    ──webhook──►   [ RELAY on Azure Container Apps ]  ──►  Az
 
 ## 0. Prerequisites
 
-- **Operator path:** no repository checkout is required. This runbook uses
-  published GHCR images and configuration values.
-- **Optional checkout:** only needed if you choose the helper script, synthetic
-  event test, or direct Python development path later in this runbook.
+- **Operator path:** published GHCR images are used; no image build is required.
+- **Option A checkout:** the scripted deployment path requires a checkout only
+  to run `deploy-relay-azure.sh`. Option B can be followed from Azure Cloud
+  Shell without a repository checkout.
 - **Azure CLI installed**, then logged in to the target subscription. If `az` isn't
   already on the machine, install it first (see
   [Install the Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)):
@@ -117,7 +117,7 @@ With the prerequisites done and your target credential in hand, provision the
 relay + queue **one of two ways**. The COM/target wiring afterwards
 (steps 3–6) is identical either way.
 
-### Option A — Scripted (fastest)
+### Option A — Semi-scripted (fastest)
 
 The relay + queue provisioning is scripted in
 [deploy/azure/deploy-relay-azure.sh](../deploy/azure/deploy-relay-azure.sh). From
@@ -130,10 +130,10 @@ cd com-event-relay/deploy/azure
 RG=rg-com-relay LOC=westeurope bash deploy-relay-azure.sh
 ```
 
-It prints the **Webhook URL** and the generated **shared secret** at the end —
-copy both (you'll need them for COM in step 4). It creates only the **send**
-policy, so add the `shim-listen` rule (Option B, step 2) before running the shim, then
-**skip to step 3 (verify)**.
+It creates the queue, Relay send policy, and Shim listen policy. It prints the
+Webhook URL, shared secret, and Shim listen connection string at the end. Save
+these values securely. Do not paste the connection string into shell history,
+terminal recordings, tickets, or shared logs. Then continue with step 3.
 
 ### Option B — Manual walkthrough (recommended for a first deploy)
 
@@ -147,6 +147,9 @@ $RG      = "rg-com-relay"                                            # Azure res
 $LOC     = "westeurope"                                              # Azure region to deploy into (override if you prefer another)
 $SB_NS   = "sbcomrelay$([System.Random]::new().Next(10000,99999))"   # Service Bus namespace name — must be GLOBALLY unique (random suffix)
 $QUEUE   = "com-events"                                              # Service Bus queue name; the relay and shim must both use this value
+$SB_LOCK_DURATION = "PT5M"                                           # Message lock duration; size above maximum Shim processing time
+$SB_MAX_DELIVERY_COUNT = 10                                          # Delivery attempts before dead-lettering
+$SB_MESSAGE_TTL = "P14D"                                             # Message retention period
 $ACA_ENV = "aca-com-relay"                                           # Azure Container Apps environment (the shared host for the relay app)
 $APP     = "com-event-relay"                                         # Container App name for the relay
 $IMAGE   = "ghcr.io/jullienl/com-event-relay:1.0.0"                 # relay container image pulled by Azure (published by CI to GHCR)
@@ -188,7 +191,11 @@ az servicebus namespace create --resource-group $RG --name $SB_NS `
 
 # The queue itself — the durable buffer between relay (send) and shim (receive)
 az servicebus queue create --resource-group $RG --namespace-name $SB_NS `
-  --name $QUEUE -o none
+  --name $QUEUE `
+  --lock-duration $SB_LOCK_DURATION `
+  --max-delivery-count $SB_MAX_DELIVERY_COUNT `
+  --default-message-time-to-live $SB_MESSAGE_TTL `
+  --enable-dead-lettering-on-message-expiration true -o none
 
 # Relay: SEND-only authorization rule (the relay may only enqueue, not read)
 az servicebus queue authorization-rule create --resource-group $RG `
@@ -208,7 +215,18 @@ $SB_SEND = az servicebus queue authorization-rule keys list --resource-group $RG
 $SB_LISTEN = az servicebus queue authorization-rule keys list --resource-group $RG `
   --namespace-name $SB_NS --queue-name $QUEUE --name shim-listen `
   --query primaryConnectionString -o tsv
+
+# Verify queue processing limits and both least-privilege rules.
+az servicebus queue show --resource-group $RG --namespace-name $SB_NS `
+  --name $QUEUE --query "{lock:lockDuration,maxDelivery:maxDeliveryCount,ttl:defaultMessageTimeToLive,deadLetterOnExpiry:deadLetteringOnMessageExpiration}" -o table
+az servicebus queue authorization-rule list --resource-group $RG `
+  --namespace-name $SB_NS --queue-name $QUEUE `
+  --query "[].{name:name,rights:rights}" -o table
 ```
+
+The lock duration must exceed the maximum time the Shim can spend receiving
+Redfish evidence, calling the analyzer, and delivering to targets. If the AI
+or target timeouts are increased, increase `$SB_LOCK_DURATION` as well.
 
 #### 3. Deploy the relay to Azure Container Apps
 
@@ -246,6 +264,10 @@ az containerapp create `
 $FQDN = az containerapp show --resource-group $RG --name $APP `
   --query properties.configuration.ingress.fqdn -o tsv
 
+# Confirm the running revision uses the expected published image.
+az containerapp show --resource-group $RG --name $APP `
+  --query "properties.template.containers[0].image" -o tsv
+
 "Webhook URL : https://$FQDN/com/webhook"   # give this URL to COM (step 4)
 "Secret hdr  : $HDR = $SECRET"               # COM sends this header/value on every POST
 ```
@@ -269,7 +291,7 @@ $FQDN = az containerapp show --resource-group $RG --name $APP `
 
 **Shortcut (bash):** prefer not to run these steps by hand? Use the
 [deploy-relay-azure.sh](../deploy/azure/deploy-relay-azure.sh) script from
-[Option A](#option-a--scripted-fastest) in step 2.
+[Option A](#option-a--semi-scripted-fastest) in step 2.
 
 ---
 
@@ -333,6 +355,11 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 > the queue first if you'd rather start clean. (A payload without a `type`/
 > `hardware` block is handled on purpose — nothing is dropped.)
 
+For a clean end-to-end test, start the Shim before sending this valid test
+message, or omit the valid POST and proceed directly to the raise fixture.
+Do not delete and recreate the queue just to remove this message because that
+also removes its authorization rules.
+
 ---
 
 ## 4. Configure the COM webhook
@@ -346,7 +373,10 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 >
 > Fork/import that collection, set your COM API token, and run one of the
 > **Create webhook** calls with the values below.
->
+
+> Postman is optional. An organization-approved REST client can send the same
+COM API request using the endpoint and JSON body below; do not commit access
+tokens or shared secrets in request files.
 > **New to COM's API or Postman?** The collection's **Overview** page includes an
 > **initial setup guide** that walks you through creating an HPE GreenLake API
 > client, getting an access token, and configuring the Postman environment — do
@@ -525,6 +555,10 @@ result. Leave it running for the end-to-end test (step 6).
 
 Run the shim as a **long-lived workload**. Any of these hosts works — same image,
 same env vars:
+
+For production, use an Azure Key Vault or other secret projection with the
+`*_FILE` variables shown below. The inline connection string example is for a
+short-lived test only.
 
 - **Azure Container Apps** (no ingress, outbound-only).
 - **AKS or any on-prem / self-managed Kubernetes cluster** — a `Deployment` that
@@ -739,12 +773,6 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://$FQDN/com/webhook" \
   -H "content-type: application/json" -H "$HDR: $SECRET" --data "@clear.json"    # → same issue closes
 ```
 
-> These fixtures are just static JSON copied from the project's shipped sample
-> builder. If you'd rather **generate** them (or see how they *normalise* into
-> `CanonicalEvent`s) with Python, run `python com-event-core/examples/dump_payloads.py
-> server raise` from a venv (`pip install ./com-event-core`) — it prints the raw
-> COM payload plus the resulting events.
-
 **What you should see.** The `raise` opens a GitHub issue and the `clear` closes
 the **same** issue:
 
@@ -867,11 +895,9 @@ environment, and the Service Bus namespace/queue in one shot.
 
 ---
 
-### Where this maps in the code
+## Further operations
 
-- Relay app + endpoints: [relay/app.py](../relay/app.py) (`/com/webhook`, `/healthz`, `/readyz`)
-- Relay config: [relay/.env.example](../relay/.env.example)
-- Queue publisher/consumer: [relay/core/queue/](../relay/core/queue/) · [shim/core/queue/](../shim/core/queue/)
-- Shim loop: [shim/worker.py](../shim/worker.py) · config: [shim/.env.example](../shim/.env.example)
-- GitHub adapter: [../../com-event-core/com_event_core/adapters/github.py](../../com-event-core/com_event_core/adapters/github.py)
-- Azure provisioning script: [deploy/azure/deploy-relay-azure.sh](../deploy/azure/deploy-relay-azure.sh)
+For adapter configuration, queue operations, secrets, monitoring, and
+production hardening, see the [Relay operator guide](../README.md), the
+[Core adapter guide](../../com-event-core/README.md), and the target platform's
+documentation.

@@ -1,0 +1,5 @@
+# Temporary override used only while issuing the first Let's Encrypt certificate.
+services:
+  nginx:
+    volumes:
+      - ./deploy/nginx/com-event-bridge-bootstrap.conf:/etc/nginx/conf.d/default.conf:ro

@@ -57,10 +57,11 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
 
 ## 0. Prerequisites
 
-- **Operator path:** no repository checkout is required. This runbook uses
-  published GHCR images and configuration values.
-- **Optional checkout:** only needed if you choose the helper script, synthetic
-  event test, or direct Python development path later in this runbook.
+- **Operator path:** published GHCR images are used; no application image build
+  is required.
+- **Option A checkout:** the semi-scripted deployment path requires a checkout
+  only to run `deploy-relay-aws.sh`. Option B can be followed from AWS
+  CloudShell without a repository checkout.
 - **AWS CLI v2 installed**, then configured for the target account. If `aws` isn't
   already on the machine, install it first (see
   [Install the AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)):
@@ -74,7 +75,10 @@ COM ──webhook──►  [ RELAY on AWS App Runner ]──►  Amazon SQS que
   aws sts get-caller-identity --query "{acct:Account, arn:Arn}" --output table
   ```
 - Permission to create **SQS queues**, **IAM roles/users**, and an **ECR repository** (admin or equivalent).
-- **Docker** (with Buildx — bundled with Docker Desktop) on the machine you run this from: it's needed to **mirror the relay image into ECR** (step 3.1) and to run the **shim**.
+- **Docker with Buildx and a running Docker daemon** on the machine used for
+  Option A image mirroring and for running the Shim. Docker Desktop or a Linux
+  host with Docker Engine is suitable. AWS CloudShell provides the AWS CLI but
+  should not be assumed to provide a usable Docker daemon for `buildx`.
 - A **GitHub repository** you can create issues in (a throwaway repo is ideal).
 - Rights to create a **GitHub Personal Access Token** (see step 1).
 - Access to configure a **COM webhook** in the HPE GreenLake / Compute Ops Management console.
@@ -125,6 +129,7 @@ these in a **PowerShell** terminal (locally, or the **PowerShell** option in AWS
 ```powershell
 $REGION = "eu-west-1"                                                # AWS region to deploy into (App Runner isn't in every region — check first)
 $QUEUE  = "com-events"                                               # SQS queue name; the relay and shim must both use this value
+$SQS_VISIBILITY_TIMEOUT = 180                                        # Seconds; must exceed maximum Shim processing time
 $APP    = "com-event-relay"                                          # App Runner service name for the relay
 $HDR    = "x-shim-secret"                                            # HTTP header COM sends carrying the shared secret (auth on every POST)
 
@@ -143,10 +148,11 @@ $SECRET   # copy this — COM will send it on every POST
 Now provision the relay **one of two ways** — the COM/target wiring afterwards
 (steps 3–6) is identical either way:
 
-### Option A — Scripted (fastest)
+### Option A — Semi-scripted (fastest)
 
-The script mirrors the image + creates the queue + service, but **not** the IAM
-roles. So first create those two roles from **Option B** below —
+The script mirrors the image, creates the queue, and creates the App Runner
+service, but **not** the IAM roles. So first create those two roles from
+**Option B** below —
 **step 2 (instance role)** and **step 3.2 (ECR access role)**. The instance-role
 policy asks for `$QUEUE_ARN`; the script creates the queue itself, so use its
 predictable ARN:
@@ -155,7 +161,9 @@ predictable ARN:
 $QUEUE_ARN = "arn:aws:sqs:${REGION}:${ACCOUNT}:${QUEUE}"   # queue doesn't exist yet — the script creates it
 ```
 
-Then from **AWS CloudShell** or **WSL/Git Bash** on Windows, in your clone:
+Then from a shell with Docker Buildx and a running Docker daemon, in your clone:
+AWS CloudShell is suitable for the AWS CLI portions, but use Docker Desktop,
+WSL with Docker Desktop integration, or a Linux Docker host for the mirror step.
 
 ```bash
 cd com-event-relay/deploy/aws
@@ -165,13 +173,16 @@ IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:1.0.0 \
 INSTANCE_ROLE_ARN=<role-from-Option-B-step-2> \
 ACCESS_ROLE_ARN=<role-from-Option-B-step-3.2> \
 AWS_REGION=eu-west-1 \
+SQS_VISIBILITY_TIMEOUT=180 \
 bash deploy-relay-aws.sh
 ```
 
-It needs **Docker** running (for the mirror) and does **not** create a DLQ — add
-Option B step 1's redrive policy if you want one. It prints the **Webhook URL** and
-generated **shared secret** at the end (copy both for COM in step 4). Then jump to
-**step 3 (verify)**.
+It needs **Docker Buildx** running for the mirror and does **not** create a DLQ.
+Add Option B step 1's redrive policy before production use, or treat this as a
+test-only deployment. It sets the SQS visibility timeout to 180 seconds so the
+Shim has time for Redfish, AI, and target processing. It prints the **Webhook
+URL**, generated **shared secret**, and queue URL at the end. Save these values,
+create the Shim receive identity, then continue to **step 3 (verify)**.
 
 ### Option B — Manual walkthrough (recommended for a first deploy)
 
@@ -184,6 +195,12 @@ Run the sub-steps below by hand to understand each resource, then continue to
 # Main queue — the durable buffer between relay (send) and shim (receive)
 $QUEUE_URL = aws sqs create-queue --queue-name $QUEUE --region $REGION `
   --query QueueUrl --output text
+
+# Keep the message invisible while the Shim performs Redfish, AI, and target work.
+# Size this above the maximum expected processing time; 180 seconds is the
+# documented baseline for the AI-enabled flow.
+aws sqs set-queue-attributes --queue-url $QUEUE_URL --region $REGION `
+  --attributes VisibilityTimeout=180
 
 # (Recommended) a dead-letter queue for poison messages, wired via a redrive policy
 $DLQ_URL = aws sqs create-queue --queue-name "$QUEUE-dlq" --region $REGION `
@@ -209,6 +226,12 @@ $QUEUE_ARN = aws sqs get-queue-attributes --queue-url $QUEUE_URL `
 > The shim maps malformed JSON to `dead_letter`, and SQS moves a message to the
 > DLQ after `maxReceiveCount` failed receives. Without a redrive policy those
 > messages are dropped instead of captured — hence the DLQ above.
+
+> **Visibility timeout matters for AI enrichment.** The documented `180` second
+> timeout keeps a message invisible while the Shim performs Redfish collection,
+> AI analysis, and target delivery. Increase it if the configured AI or target
+> timeouts can exceed that value. If it is too short, SQS can redeliver a message
+> while the first Shim attempt is still processing it.
 
 #### 2. Create the IAM instance role for the relay (send-only)
 
@@ -348,6 +371,10 @@ aws apprunner wait service-running --service-arn $SERVICE_ARN --region $REGION
 $FQDN = aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGION `
   --query Service.ServiceUrl --output text
 
+# Confirm the running service uses the expected release image.
+aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGION `
+  --query "Service.SourceConfiguration.ImageRepository.ImageIdentifier" --output text
+
 "Webhook URL : https://$FQDN/com/webhook"   # give this URL to COM (step 4)
 "Secret hdr  : $HDR = $SECRET"               # COM sends this header/value on every POST
 ```
@@ -439,7 +466,12 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://$FQDN/com/webhook" `
 >
 > Fork/import that collection, set your COM API token, and run one of the
 > **Create webhook** calls with the values below.
->
+
+Postman is optional. The same registration can be performed with the COM API
+using your organization's approved HTTP client. Use the webhook API endpoint,
+Bearer token, destination URL, shared-secret header, and event filter shown
+below; do not place tokens or shared secrets in a committed file.
+
 > **New to COM's API or Postman?** The collection's **Overview** page includes an
 > **initial setup guide** that walks you through creating an HPE GreenLake API
 > client, getting an access token, and configuring the Postman environment — do
@@ -542,11 +574,12 @@ failed — recheck the destination URL, the certificate, and the relay health
 
 ---
 
-## 5. Create the shim's IAM identity (receive-only) and run it
+## 5. Create the Shim's IAM identity (receive-only) and run it
 
-The shim uses the **default boto3 credential chain**. On ECS/EC2 give it a
-**task/instance role**; for a laptop test, create a small **IAM user** limited to
-consuming this one queue.
+The Shim uses the **default boto3 credential chain**. For production on ECS or
+EC2, use a task or instance role. For EKS, use an IRSA role. Create the IAM user
+below only for a temporary laptop test, then delete its access key and user during
+teardown.
 
 First create the receive-only identity (used by both the test and production
 runs below):
@@ -665,9 +698,10 @@ same env vars:
   de-dup persistence below).
 - A **systemd** service on a VM.
 
-For a plain Docker host, drop `--rm`, add `--restart unless-stopped`, and mount a
-named volume at `/data` so the de-dup store survives restarts/upgrades (Docker
-auto-creates the `com-dedup` volume on first use — no pre-create needed):
+For production, prefer an ECS task role, EC2 instance profile, or EKS IRSA role
+and omit the static AWS key variables. The following plain Docker command is a
+temporary laptop fallback only. Mount a named volume at `/data` so the de-dup
+store survives restarts/upgrades:
 
 ```powershell
 docker run -d --name com-event-shim --restart unless-stopped `
@@ -888,12 +922,6 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://$FQDN/com/webhook" \
   -H "content-type: application/json" -H "$HDR: $SECRET" --data "@clear.json"    # → same issue closes
 ```
 
-> These fixtures are just static JSON copied from the project's shipped sample
-> builder. If you'd rather **generate** them (or see how they *normalise* into
-> `CanonicalEvent`s) with Python, run `python com-event-core/examples/dump_payloads.py
-> server raise` from a venv (`pip install ./com-event-core`) — it prints the raw
-> COM payload plus the resulting events.
-
 **What you should see.** The `raise` opens a GitHub issue and the `clear` closes
 the **same** issue:
 
@@ -1006,7 +1034,17 @@ aws sqs delete-queue --queue-url $DLQ_URL  --region $REGION
 aws iam delete-role-policy --role-name com-relay-apprunner --policy-name sqs-send
 aws iam delete-role --role-name com-relay-apprunner
 aws iam delete-user-policy --user-name com-shim --policy-name sqs-consume
-aws iam delete-access-key --user-name com-shim --access-key-id $AWS_ID
+# Delete every access key belonging to the temporary test user.
+$KEY_IDS = aws iam list-access-keys --user-name com-shim `
+  --query "AccessKeyMetadata[].AccessKeyId" --output text
+foreach ($KEY_ID in ($KEY_IDS -split '\s+')) {
+  if ($KEY_ID) {
+    aws iam delete-access-key --user-name com-shim --access-key-id $KEY_ID
+  }
+}
+# Confirm no access keys remain before deleting the user.
+aws iam list-access-keys --user-name com-shim `
+  --query "AccessKeyMetadata[].{id:AccessKeyId,status:Status}" --output table
 aws iam delete-user --user-name com-shim
 
 # Local scratch files
@@ -1015,11 +1053,9 @@ Remove-Item apprunner-trust.json, apprunner-send.json, apprunner-src.json, shim-
 
 ---
 
-### Where this maps in the code
+## Further operations
 
-- Relay app + endpoints: [relay/app.py](../relay/app.py) (`/com/webhook`, `/healthz`, `/readyz`)
-- Relay config: [relay/.env.example](../relay/.env.example)
-- SQS publisher/consumer: [relay/core/queue/sqs.py](../relay/core/queue/sqs.py) · [shim/core/queue/sqs.py](../shim/core/queue/sqs.py)
-- Shim loop: [shim/worker.py](../shim/worker.py) · config: [shim/.env.example](../shim/.env.example)
-- GitHub adapter: [../../com-event-core/com_event_core/adapters/github.py](../../com-event-core/com_event_core/adapters/github.py)
-- AWS provisioning script: [deploy/aws/deploy-relay-aws.sh](../deploy/aws/deploy-relay-aws.sh)
+For adapter configuration, queue operations, secrets, monitoring, and
+production hardening, see the [Relay operator guide](../README.md), the
+[Core adapter guide](../../com-event-core/README.md), and the target platform's
+documentation.

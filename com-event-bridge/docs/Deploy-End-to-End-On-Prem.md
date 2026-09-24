@@ -26,7 +26,7 @@ COM   ──webhook──►   [ nginx :443 (TLS) ]  ──►  [ BRIDGE :8080 ]
 |-------|------|
 | **nginx** (`:80`/`:443`) | Public TLS edge: terminates HTTPS with a CA-signed cert, rate-limits, proxies to the bridge on `127.0.0.1:8080`. |
 | **certbot** | Issues + auto-renews the Let's Encrypt certificate (or bring your own corporate CA). |
-| **bridge** (`:8080`, internal) | Answers COM's handshake, validates the shared secret, normalises the event, and delivers it — persisting to a local **spool** first so a target outage never loses an event. |
+| **bridge** (`:8080`, internal) | Answers COM's handshake, validates the shared secret, normalises the event, and delivers it — persisting events locally and retrying while spool capacity is available. |
 | **spool + dedup** (`/data`) | On-disk SQLite buffer (durable) + de-dup store, on a mounted volume. |
 
 > **The trade-off vs the relay.** Here **you own the public edge**: a public DNS
@@ -58,15 +58,16 @@ COM   ──webhook──►   [ nginx :443 (TLS) ]  ──►  [ BRIDGE :8080 ]
 - **A Linux host in your DMZ** (VM or bare metal) with a **public IP** reachable
   from the internet on **`443`**, and **outbound** internet to your target
   (GitHub here). 1 vCPU / 1 GB RAM is plenty.
-- **Docker + the Compose plugin** on that host:
+- **Docker** on that host. The **Compose plugin** is additionally required for
+  Option A:
   ```bash
   docker version        # Server section must print
   docker compose version
   ```
 - **Published Bridge image:** `ghcr.io/jullienl/com-event-bridge:1.0.0`.
-  The operator path pulls this image directly and does not require a repository
-  checkout. A source checkout is only needed for contributor or maintainer
-  workflows that intentionally build the image locally.
+-  Option B pulls this image directly and does not require a repository
+  checkout. Option A requires the repository's Compose, nginx, certbot, and
+  environment-template files, but does not build the image locally.
 - A **public DNS name** you control (e.g. `com-bridge.example.com`) that you can
   point at the host's public IP (step 2).
 - A **GitHub repository** you can create issues in (a throwaway repo is ideal for
@@ -111,6 +112,69 @@ The GitHub adapter reads: `GITHUB_REPO` (required, `owner/repo`), `GITHUB_TOKEN`
 
 ## 2. DNS + firewall (the public edge)
 
+### Option A: Docker Compose (recommended)
+
+Use the full Compose stack when you want the Bridge, nginx TLS reverse proxy,
+and certbot renewal on the same host. It uses the published Bridge image and
+requires no local image build. Follow the numbered DNS, configuration, and
+certificate steps below, then continue with [step 5: Verify the bridge](#5-verify-the-bridge-before-wiring-com).
+
+Quick command path:
+
+```bash
+# From a checkout containing com-event-bridge/docker-compose.yml.
+cd com-event-bridge
+cp bridge/.env.example bridge/.env
+# Edit bridge/.env and deploy/nginx/com-event-bridge.conf with your values.
+
+docker compose -f docker-compose.yml -f docker-compose.bootstrap.yml up -d nginx
+docker compose run --rm --entrypoint certbot certbot certonly \
+  --webroot -w /var/www/certbot \
+  -d <your-fqdn> \
+  --email ops@example.com --agree-tos --no-eff-email
+docker compose -f docker-compose.yml -f docker-compose.bootstrap.yml stop nginx
+docker compose pull bridge
+docker compose up -d
+```
+
+Then verify the stack and register the COM webhook as described in the detailed
+steps below.
+
+Use the quick commands only after completing the DNS, firewall, hostname, and
+target configuration prerequisites below. Steps 3 and 4 explain the same
+actions in detail.
+
+### Option B: Docker Run behind an existing reverse proxy
+
+Use this path when nginx, Caddy, an enterprise load balancer, or another
+TLS-terminating reverse proxy already owns the public hostname and certificate.
+This runs only the published Bridge image. The reverse proxy must forward
+`/com/webhook` and the health endpoints to `127.0.0.1:8080`.
+
+Create a host configuration file such as `/etc/com-event-bridge/bridge.env`
+using the settings in [step 3](#3-configure-the-bridge), then run:
+
+```bash
+docker pull ghcr.io/jullienl/com-event-bridge:1.0.0
+docker volume create bridge-data
+docker run -d --name com-event-bridge --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -v bridge-data:/data \
+  --env-file /etc/com-event-bridge/bridge.env \
+  ghcr.io/jullienl/com-event-bridge:1.0.0
+```
+
+Do not expose port `8080` publicly. Configure the existing reverse proxy to
+forward HTTPS traffic to `http://127.0.0.1:8080`, then continue with [step 5:
+Verify the bridge](#5-verify-the-bridge-before-wiring-com). Certificate
+issuance, renewal, DNS, and public firewall rules remain the responsibility of
+that reverse-proxy deployment. For this path, keep the Bridge settings in
+`/etc/com-event-bridge/bridge.env`; the Compose `.env` and nginx files are not
+used by the Docker Run command.
+
+The detailed DNS and firewall steps below apply to Option A. For Option B,
+verify the equivalent controls in the existing reverse proxy before continuing.
+
 Because the bridge **is** the public endpoint, COM has to reach it over public
 HTTPS with a valid certificate. Before deploying:
 
@@ -133,13 +197,27 @@ HTTPS with a valid certificate. Before deploying:
 
 ## 3. Configure the bridge
 
-Create the bridge config from the template and fill in the essentials:
+Create the bridge config from the template and fill in the essentials.
+Option A uses the repository template:
 
 ```bash
 cp bridge/.env.example bridge/.env
 ```
 
-Edit `bridge/.env` and set at least:
+Option B does not require a repository checkout. Create the host file used by
+the Docker Run command instead:
+
+```bash
+sudo install -d -m 750 /etc/com-event-bridge
+sudo touch /etc/com-event-bridge/bridge.env
+sudo chmod 600 /etc/com-event-bridge/bridge.env
+```
+
+Set the same variables below in either `bridge/.env` or
+`/etc/com-event-bridge/bridge.env`.
+
+Edit the selected env file and set at least: `bridge/.env` for Option A, or
+`/etc/com-event-bridge/bridge.env` for Option B.
 
 ```ini
 # --- COM authentication ---------------------------------------------------
@@ -169,7 +247,9 @@ SERVER_MONITORS=health
   COM webhook in step 6. `openssl rand -hex 32` gives a 64-hex value.
 - **`DELIVERY_MODE=spool`** is the safe default and the reason to run the bridge:
   it acks COM with `202` immediately and a background worker retries delivery, so
-  a GitHub outage never loses an event and never degrades the COM webhook. It
+  a GitHub outage does not immediately lose accepted events while configured
+  spool capacity is available, and it does not degrade the COM webhook. If both
+  spool lanes fill, new events receive `503` and COM does not retry them. It
   **requires** a durable `SPOOL_PATH`; the bridge **refuses to start** if
   `DELIVERY_MODE=spool` and `SPOOL_PATH` is unset (an ephemeral path would
   silently lose the backlog on restart). The image + compose already wire
@@ -199,7 +279,8 @@ Key env vars (full list in [bridge/.env.example](../bridge/.env.example)):
 | `MAX_BODY_BYTES` | `262144` (default) | 256 KB body cap → `413` if exceeded (also enforced in nginx). |
 | `DELIVERY_MODE` | `spool` | `spool` (durable, default) or `sync` (best-effort, lossy). |
 | `SPOOL_PATH` | `/data/spool.db` | **Required in spool mode**; must be on the mounted volume. |
-| `SPOOL_MAX_BYTES` | `52428800` (default) | 50 MB backlog cap → `503` backpressure over it. |
+| `SPOOL_MAX_BYTES` | `52428800` (default) | Normal enriched backlog cap (50 MB); when full, the unenriched overflow lane is used. |
+| `SPOOL_OVERFLOW_MAX_BYTES` | `10485760` (default) | Unenriched overflow cap (10 MB); `503` only when both lanes are full. |
 | `TARGETS` | `github` | One name, or comma-separated without space to fan out (`github,slack`). |
 | `GITHUB_REPO` / `GITHUB_TOKEN` | your repo + PAT | `GITHUB_REPO` is the **`owner/repo` slug only**, not a URL. Token needs **Issues: read/write**. |
 | `SERVER_MONITORS` | `health` | Watch server health (default). Add more as a **comma-separated** list without space — `health,power,connection,subscription`. **Each monitor you add needs a matching COM webhook** targeting this bridge. **A condition you *don't* list is simply not monitored** — no item opens or closes for it and no error is raised. **On post-only chat targets (`slack`, `teams`) each enabled-but-*healthy* condition posts a `Resolved` message on every delivery** — so a `CRITICAL` health snapshot with `SERVER_MONITORS=health,power` posts a critical *health* message **and** a `Resolved` *power* message. Scope `SERVER_MONITORS` to only what you want alerts on (stateful targets like `github` hide this by searching for an open item first). |
@@ -227,14 +308,18 @@ sed -i 's/com-bridge.example.com/<your-fqdn>/g' deploy/nginx/com-event-bridge.co
 on `:80` to serve the ACME challenge before the cert exists:
 
 ```bash
-# Start nginx alone so it can answer the ACME challenge on :80
-docker compose up -d nginx
+# Start the temporary HTTP-only nginx so it can answer the ACME challenge on :80.
+# The normal TLS config references the certificate and cannot start before it exists.
+docker compose -f docker-compose.yml -f docker-compose.bootstrap.yml up -d nginx
 
 # Issue the certificate (replace host + email)
-docker compose run --rm certbot certonly \
+docker compose run --rm --entrypoint certbot certbot certonly \
   --webroot -w /var/www/certbot \
   -d <your-fqdn> \
   --email ops@example.com --agree-tos --no-eff-email
+
+# Stop the bootstrap nginx before starting the normal TLS configuration.
+docker compose -f docker-compose.yml -f docker-compose.bootstrap.yml stop nginx
 ```
 
 **3. Pull the published Bridge image and bring up the full stack:**
@@ -244,16 +329,34 @@ docker compose pull bridge
 docker compose up -d
 ```
 
-certbot renews the cert twice daily; after a renewal reload nginx to pick it up
-(add a cron/hook, or restart nginx on a schedule):
+certbot renews the cert twice daily, but nginx must reload before it serves a
+renewed certificate. Add a host scheduler or deployment hook that runs:
 
 ```bash
 docker compose exec nginx nginx -s reload
 ```
 
+For example, a host cron entry can reload nginx daily after the certbot service
+has had time to renew:
+
+```cron
+15 4 * * * cd /opt/com-event-bridge && docker compose exec -T nginx nginx -s reload >> /var/log/com-event-bridge-nginx-reload.log 2>&1
+```
+
+Validate the renewal configuration before production:
+
+```bash
+docker compose run --rm --entrypoint certbot certbot renew --dry-run
+```
+
 > **Corporate CA instead of Let's Encrypt?** Drop the `certbot` service and mount
 > your own `fullchain.pem` / `privkey.pem` into the nginx cert paths, then track
 > expiry in your own PKI. See [HARDENING.md](../HARDENING.md).
+
+> **Health endpoint exposure.** The sample nginx configuration exposes
+> `/healthz` for monitoring. Restrict that location to the monitoring network
+> or remove it from the public server before production use; `/com/webhook` is
+> the only endpoint COM needs.
 
 Confirm all three services are healthy:
 
@@ -326,6 +429,9 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST https://<your-fqdn>/com/webhook
 >
 > Fork/import that collection, set your COM API token, and run one of the
 > **Create webhook** calls with the values below.
+
+Postman is optional. Use your organization's approved REST client or the
+official COM API documentation with the endpoint and JSON body shown below.
 >
 > **New to COM's API or Postman?** The collection's **Overview** page includes an
 > **initial setup guide** (create an HPE GreenLake API client, get an access
@@ -553,12 +659,6 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST "https://<your-fqdn>/com/webhook"
   -H "content-type: application/json" -H "x-shim-secret: <COM_SHARED_SECRET>" --data "@clear.json"    # → same issue closes
 ```
 
-> These fixtures are just static JSON copied from the project's shipped sample
-> builder. If you'd rather **generate** them (or see how they *normalise* into
-> `CanonicalEvent`s) with Python, run `python com-event-core/examples/dump_payloads.py
-> server raise` from a venv (`pip install ./com-event-core`) — it prints the raw
-> COM payload plus the resulting events.
-
 **What you should see.** The `raise` opens a GitHub issue and the `clear` closes
 the **same** issue:
 
@@ -585,7 +685,7 @@ state all come straight from the two fixtures above.
 | Bridge **won't start** | `DELIVERY_MODE=spool` but `SPOOL_PATH` unset | The bridge fails fast by design. Keep `SPOOL_PATH=/data/spool.db` and the `bridge-data:/data` volume (both are defaults), or set `DELIVERY_MODE=sync` for best-effort. |
 | Bridge returns `401` | Wrong/missing header | Header **name** must equal `SHARED_SECRET_HEADER` (`x-shim-secret`) and value must equal `COM_SHARED_SECRET`. |
 | Bridge returns `413` | Body too large | Raise `MAX_BODY_BYTES` **and** nginx `client_max_body_size` together if you genuinely send large payloads. |
-| Bridge returns `503` on POST | Spool full (backpressure) or `sync` target down | In spool mode: backlog exceeded `SPOOL_MAX_BYTES` — the target has been down; check the worker logs. In sync mode: the target is unreachable (event lost — prefer spool). |
+| Bridge returns `503` on POST | Both spool lanes are full, or a `sync` target is down | In spool mode: check `SPOOL_MAX_BYTES`, `SPOOL_OVERFLOW_MAX_BYTES`, and the worker logs. Normal overflow events are accepted with `202` and delivered without enrichment. In sync mode: the target is unreachable and the event is lost, so prefer spool. |
 | `/readyz` returns `503` | Spool worker died | Check `docker compose logs bridge`; restart the service. |
 | Forward fails with `CERTIFICATE_VERIFY_FAILED` / `unable to get local issuer certificate` | TLS-inspecting corporate proxy re-signs the connection with an internal CA the container doesn't trust (a browser on the same machine works) | Mount a CA bundle (internal CA **+** public roots) and set `SSL_CERT_FILE` to it — no code change needed. Full recipe: [TLS interception (corporate proxy)](../../com-event-core/README.md#tls-interception-corporate-proxy). |
 | No GitHub issue appears | Token/repo/scope | Verify `GITHUB_REPO=owner/repo` and the PAT has **Issues: read/write**. Watch the bridge logs for the forward error. |
@@ -609,13 +709,9 @@ docker compose logs bridge --follow
 # Is the app ready? (spool worker alive)
 curl -s http://127.0.0.1:8080/readyz
 
-# How big is the spool backlog right now?
-docker compose exec bridge python -c \
-  "import sqlite3; print(sqlite3.connect('/data/spool.db').execute('select count(*), coalesce(sum(length(body)),0) from spool').fetchone())"
-# Example output — 1 event still pending in the spool, 376 bytes total:
-#   (1, 376)
-# Drops to (0, 0) once the worker delivers it. A count that only grows means the
-# worker can't deliver (target down / misconfig) — check the bridge logs above.
+# How much local state is stored? This is a disk-usage check, not a database query.
+docker compose exec bridge sh -c 'du -h /data/spool.db /data/dedup.db 2>/dev/null || true'
+# A growing spool.db means the worker cannot deliver; check the bridge logs above.
 
 # nginx / cert issues
 docker compose logs nginx --tail 50
@@ -648,14 +744,9 @@ Then remove the DNS record and close the inbound firewall rules.
 
 ---
 
-### Where this maps in the code
+## Further operations
 
-- Bridge app + endpoints: [bridge/app.py](../bridge/app.py) (`/com/webhook`, `/healthz`, `/readyz`)
-- Delivery mode + fail-fast spool check: [bridge/app.py](../bridge/app.py)
-- Spool store + retry worker: [bridge/core/spool.py](../bridge/core/spool.py)
-- Bridge config: [bridge/.env.example](../bridge/.env.example)
-- TLS reverse proxy: [deploy/nginx/com-event-bridge.conf](../deploy/nginx/com-event-bridge.conf)
-- Full DMZ stack: [docker-compose.yml](../docker-compose.yml)
-- Bare-host systemd unit: [deploy/systemd/com-event-bridge.service](../deploy/systemd/com-event-bridge.service)
-- Hardening (DMZ, TLS, certs, secrets, HA): [HARDENING.md](../HARDENING.md)
-- GitHub adapter: [../../com-event-core/com_event_core/adapters/github.py](../../com-event-core/com_event_core/adapters/github.py)
+For production hardening, certificate lifecycle, firewall rules, secrets,
+monitoring, backup, and availability guidance, see
+[`HARDENING.md`](../HARDENING.md). Target-specific configuration remains in
+[`com-event-core`](../../com-event-core/README.md).

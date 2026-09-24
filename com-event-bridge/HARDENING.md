@@ -47,14 +47,18 @@ Using the compose stack, **certbot** issues and renews automatically. One-time
 bootstrap for the first certificate (HTTP-01 challenge):
 
 ```bash
-# 1. Start nginx first so it can serve the ACME challenge on :80
-docker compose up -d nginx
+# 1. Start the temporary HTTP-only nginx so it can serve the ACME challenge on :80.
+#    The normal TLS config references the certificate and cannot start first.
+docker compose -f docker-compose.yml -f docker-compose.bootstrap.yml up -d nginx
 
 # 2. Issue the certificate (replace host + email)
-docker compose run --rm certbot certonly \
+docker compose run --rm --entrypoint certbot certbot certonly \
   --webroot -w /var/www/certbot \
   -d com-bridge.example.com \
   --email ops@example.com --agree-tos --no-eff-email
+
+# Stop the bootstrap nginx before switching to the normal TLS config.
+docker compose -f docker-compose.yml -f docker-compose.bootstrap.yml stop nginx
 
 # 3. Bring up the full stack; certbot renews twice daily, nginx serves the cert
 docker compose up -d

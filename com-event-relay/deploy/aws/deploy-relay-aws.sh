@@ -15,6 +15,7 @@ set -euo pipefail
 # ---- Config (override via env before running) -----------------------------
 REGION="${AWS_REGION:-eu-west-1}"
 QUEUE="${QUEUE:-com-events}"
+SQS_VISIBILITY_TIMEOUT="${SQS_VISIBILITY_TIMEOUT:-180}"
 APP_NAME="${APP_NAME:-com-event-relay}"
 GHCR_IMAGE="${GHCR_IMAGE:-ghcr.io/jullienl/com-event-relay:1.0.0}"   # upstream (published by CI)
 IMAGE="${IMAGE:?Set IMAGE to your private ECR URI, e.g. <acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:1.0.0}"
@@ -39,6 +40,8 @@ docker buildx imagetools create --tag "$IMAGE" "$GHCR_IMAGE"
 # ---- SQS queue ------------------------------------------------------------
 QUEUE_URL="$(aws sqs create-queue --queue-name "$QUEUE" --region "$REGION" \
   --query QueueUrl --output text)"
+aws sqs set-queue-attributes --queue-url "$QUEUE_URL" --region "$REGION" \
+  --attributes "VisibilityTimeout=$SQS_VISIBILITY_TIMEOUT"
 
 # ---- App Runner service ---------------------------------------------------
 cat > /tmp/apprunner-src.json <<JSON
