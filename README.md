@@ -515,7 +515,9 @@ evidence before sending the complete package to the AI Gateway for analysis.
 
 GitHub issue example: AI-assisted incident investigation with HPE Customer Advisory enrichment
 
-<img src="docs/images/github-CA-AI-analysis.png" alt="GitHub issue with AI-assisted incident investigation with Customer Advisories enrichment" width="280" />
+| GitHub: AI + Customer Advisories | Jira: AI + Customer Advisories |
+|---|---|
+| <img src="docs/images/github-CA-AI-analysis.png" alt="GitHub issue with AI-assisted incident investigation with Customer Advisories enrichment" width="280" /> | <img src="docs/images/jira-CA-AI-analysis.png" alt="Jira issue with AI-assisted incident investigation with Customer Advisories enrichment" width="280" /> |
 
 
 ### To learn more
