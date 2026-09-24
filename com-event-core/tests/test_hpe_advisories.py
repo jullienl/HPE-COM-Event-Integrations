@@ -544,12 +544,27 @@ class TestRendering:
 
         e = _event(advisory_references=[
             {"status": "open", "id": "CA-1", "title": "Fan fault", "component": None,
-             "summary": None, "resolution": None, "url": None},
+             "summary": None, "resolution": None, "url": "https://support.hpe.com/ca-1"},
         ])
         doc = JiraAdapter()._adf(e)
         rendered = str(doc)
         assert ADVISORY_HEADING in rendered
         assert "Fan fault" in rendered
+        url_nodes = [
+            node
+            for node in doc["content"]
+            if node.get("type") == "paragraph"
+            and any(item.get("text") == "https://support.hpe.com/ca-1" for item in node.get("content", []))
+        ]
+        assert len(url_nodes) == 1
+        url_node = next(
+            item for item in url_nodes[0]["content"]
+            if item.get("text") == "https://support.hpe.com/ca-1"
+        )
+        assert url_node["marks"] == [{
+            "type": "link",
+            "attrs": {"href": "https://support.hpe.com/ca-1"},
+        }]
 
     def test_elastic_adapter_includes_advisory_references(self, monkeypatch):
         monkeypatch.setenv("ELASTIC_URL", "https://es.test:9200")

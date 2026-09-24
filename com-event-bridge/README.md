@@ -496,13 +496,13 @@ For an operator smoke test, use the published image. No source checkout or
 image build is required:
 
 ```bash
-docker pull ghcr.io/jullienl/com-event-bridge:1.0.0
+docker pull ghcr.io/jullienl/com-event-bridge:1.0.1
 docker volume create bridge-data
 docker run -d --name com-event-bridge \
    -p 8080:8080 \
    -v bridge-data:/data \
    --env-file bridge/.env \
-   ghcr.io/jullienl/com-event-bridge:1.0.0
+   ghcr.io/jullienl/com-event-bridge:1.0.1
 ```
 
 The full runbook covers TLS, DNS, COM registration, persistence, and production

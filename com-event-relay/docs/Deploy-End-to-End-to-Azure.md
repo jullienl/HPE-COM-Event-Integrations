@@ -152,7 +152,7 @@ $SB_MAX_DELIVERY_COUNT = 10                                          # Delivery 
 $SB_MESSAGE_TTL = "P14D"                                             # Message retention period
 $ACA_ENV = "aca-com-relay"                                           # Azure Container Apps environment (the shared host for the relay app)
 $APP     = "com-event-relay"                                         # Container App name for the relay
-$IMAGE   = "ghcr.io/jullienl/com-event-relay:1.0.0"                 # relay container image pulled by Azure (published by CI to GHCR)
+$IMAGE   = "ghcr.io/jullienl/com-event-relay:1.0.1"                 # relay container image pulled by Azure (published by CI to GHCR)
 $HDR     = "x-shim-secret"                                           # HTTP header COM sends carrying the shared secret (auth on every POST)
 
 # 32-byte (64 hex char) shared secret, no openssl needed on Windows:
@@ -278,7 +278,7 @@ az containerapp show --resource-group $RG --name $APP `
 > always answered fast.
 
 > **Which image?** This runbook uses the project's prebuilt relay image
-> `ghcr.io/jullienl/com-event-relay:1.0.0` — it's public and already contains
+> `ghcr.io/jullienl/com-event-relay:1.0.1` — it's public and already contains
 > everything (handshake, secret check, queue publisher), so **just use it**; that's
 > the whole point. You only need your own image if you've forked and changed the
 > relay code. In that case, if your fork's package is **private**, add registry
@@ -532,7 +532,7 @@ docker run --rm --name com-event-shim `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:1.0.0
+  ghcr.io/jullienl/com-event-shim:1.0.1
 ```
 
 The shim logs each message it drains, the events it normalises, and the forward
@@ -581,7 +581,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:1.0.0
+  ghcr.io/jullienl/com-event-shim:1.0.1
 ```
 
 > **Secrets from files (vault) — recommended for production.** Every sensitive
@@ -604,7 +604,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
 >   -e GITHUB_REPO=your-org/com-issues `
 >   -e GITHUB_TOKEN_FILE=/run/secrets/github-token `
 >   -e SERVER_MONITORS=health `
->   ghcr.io/jullienl/com-event-shim:1.0.0
+>   ghcr.io/jullienl/com-event-shim:1.0.1
 > ```
 >
 > On **Kubernetes** mount an Azure Key Vault secret via the **Secrets Store CSI
@@ -795,7 +795,7 @@ state all come straight from the two fixtures above.
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | COM won't enable the webhook | Handshake failed | Confirm `GET /com/webhook` echoes the challenge over **public HTTPS** with a valid cert (step 3). Check the URL has no typo and ends in `/com/webhook`. |
-| `curl` to `/healthz` hangs / **stream timeout** / 0 bytes (but TLS connects) | Relay container **crashed on boot** — TCP+TLS reach the ingress but the app exited before binding `:8080`, so nothing answers | Check the container logs (below): a Python traceback / `ModuleNotFoundError` or a missing required env var means the app never started. Confirm `runningStatus` and that ingress `targetPort` is `8080`. Fix the cause, then roll a new revision (`az containerapp update --image …:1.0.0`). |
+| `curl` to `/healthz` hangs / **stream timeout** / 0 bytes (but TLS connects) | Relay container **crashed on boot** — TCP+TLS reach the ingress but the app exited before binding `:8080`, so nothing answers | Check the container logs (below): a Python traceback / `ModuleNotFoundError` or a missing required env var means the app never started. Confirm `runningStatus` and that ingress `targetPort` is `8080`. Fix the cause, then roll a new revision (`az containerapp update --image …:1.0.1`). |
 | Relay returns `401` | Wrong/missing header | Header **name** must equal `SHARED_SECRET_HEADER` (`x-shim-secret`) and value must equal `$SECRET`. |
 | Relay returns `413` | Body too large | Raise `MAX_BODY_BYTES` on the relay app if you genuinely send large payloads. |
 | Relay returns `503` | Queue unreachable | Check the **send** connection string secret and that the namespace/queue exist; `GET /readyz` should be `200`. |

@@ -64,7 +64,7 @@ COM   ──webhook──►   [ nginx :443 (TLS) ]  ──►  [ BRIDGE :8080 ]
   docker version        # Server section must print
   docker compose version
   ```
-- **Published Bridge image:** `ghcr.io/jullienl/com-event-bridge:1.0.0`.
+- **Published Bridge image:** `ghcr.io/jullienl/com-event-bridge:1.0.1`.
 -  Option B pulls this image directly and does not require a repository
   checkout. Option A requires the repository's Compose, nginx, certbot, and
   environment-template files, but does not build the image locally.
@@ -155,13 +155,13 @@ Create a host configuration file such as `/etc/com-event-bridge/bridge.env`
 using the settings in [step 3](#3-configure-the-bridge), then run:
 
 ```bash
-docker pull ghcr.io/jullienl/com-event-bridge:1.0.0
+docker pull ghcr.io/jullienl/com-event-bridge:1.0.1
 docker volume create bridge-data
 docker run -d --name com-event-bridge --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   -v bridge-data:/data \
   --env-file /etc/com-event-bridge/bridge.env \
-  ghcr.io/jullienl/com-event-bridge:1.0.0
+  ghcr.io/jullienl/com-event-bridge:1.0.1
 ```
 
 Do not expose port `8080` publicly. Configure the existing reverse proxy to

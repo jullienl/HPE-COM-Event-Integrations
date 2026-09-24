@@ -68,6 +68,17 @@ def _adf_para(text: str, *, bold_prefix: str | None = None, bold: bool = False) 
     return {"type": "paragraph", "content": content}
 
 
+def _adf_link_para(text: str, href: str) -> dict:
+    return {
+        "type": "paragraph",
+        "content": [{
+            "type": "text",
+            "text": text,
+            "marks": [{"type": "link", "attrs": {"href": href}}],
+        }],
+    }
+
+
 def _adf_heading(text: str, level: int = 3) -> dict:
     return {
         "type": "heading",
@@ -177,7 +188,7 @@ class JiraAdapter(TargetAdapter):
                 prefix = f"[{label}] {ref['id']}: " if ref.get("id") else f"[{label}] "
                 content.append(_adf_para(f"{prefix}{title}"))
                 if ref.get("url"):
-                    content.append(_adf_para(ref["url"]))
+                    content.append(_adf_link_para(ref["url"], ref["url"]))
         return {"type": "doc", "version": 1, "content": content}
 
     def forward(self, event: CanonicalEvent) -> None:
