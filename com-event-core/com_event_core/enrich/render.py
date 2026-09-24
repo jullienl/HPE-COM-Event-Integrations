@@ -28,6 +28,9 @@ from __future__ import annotations
 
 from ..normalize import CanonicalEvent
 
+# HPE GreenLake / Compute Ops Management console.
+GREENLAKE_URL = "https://common.cloud.hpe.com/"
+
 #: Heading used above the analysis by every adapter.
 HEADING = "AI analysis (automated — verify before acting)"
 

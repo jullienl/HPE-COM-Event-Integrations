@@ -32,6 +32,7 @@ import httpx
 
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
+from com_event_core.enrich.render import GREENLAKE_URL
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.dynatrace")
@@ -71,7 +72,8 @@ class DynatraceAdapter(TargetAdapter):
         if e.resource_model:
             props["com.model"] = e.resource_model
         if e.mgmt_url:
-            props["com.mgmt_url"] = e.mgmt_url
+            props["com.ilo_url"] = e.mgmt_url
+        props["com.greenlake_url"] = GREENLAKE_URL
         if e.description:
             props["com.description"] = e.description
         if e.resolution:

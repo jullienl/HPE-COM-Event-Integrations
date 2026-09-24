@@ -9,7 +9,7 @@
 
 services:
   bridge:
-    image: ghcr.io/jullienl/com-event-bridge:1.0.1
+    image: ghcr.io/jullienl/com-event-bridge:1.0.2
     env_file: ./bridge/.env
     expose:
       - "8080"            # internal only; not published to the host

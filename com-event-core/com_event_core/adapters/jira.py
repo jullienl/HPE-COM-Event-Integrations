@@ -38,7 +38,13 @@ import re
 
 import httpx
 
-from com_event_core.enrich.render import ADVISORY_HEADING, HEADING, has_advisories, has_analysis
+from com_event_core.enrich.render import (
+    ADVISORY_HEADING,
+    GREENLAKE_URL,
+    HEADING,
+    has_advisories,
+    has_analysis,
+)
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -159,7 +165,8 @@ class JiraAdapter(TargetAdapter):
             _adf_para(f"Time: {e.time_created or 'n/a'}"),
         ]
         if e.mgmt_url:
-            content.append(_adf_para(f"Management URL: {e.mgmt_url}"))
+            content.append(_adf_link_para(f"Open iLO: {e.mgmt_url}", e.mgmt_url))
+        content.append(_adf_link_para("Open HPE GreenLake", GREENLAKE_URL))
         if e.description:
             content.append(_adf_para(e.description))
         if e.resolution:

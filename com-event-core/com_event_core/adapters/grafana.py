@@ -36,6 +36,7 @@ import httpx
 
 from com_event_core.normalize import CanonicalEvent
 from com_event_core.secrets import get_secret
+from com_event_core.enrich.render import GREENLAKE_URL
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.grafana")
@@ -82,6 +83,7 @@ class GrafanaAdapter(TargetAdapter):
                 "serial": e.resource_serial,
                 "model": e.resource_model,
                 "mgmt_url": e.mgmt_url,
+                "greenlake_url": GREENLAKE_URL,
                 "correlation_key": e.correlation_key or e.dedup_key,
                 "dedup_key": e.dedup_key,
                 "description": e.description,

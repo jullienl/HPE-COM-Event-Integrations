@@ -34,7 +34,7 @@ import time
 
 import httpx
 
-from com_event_core.enrich.render import analysis_text
+from com_event_core.enrich.render import GREENLAKE_URL, analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -104,7 +104,8 @@ class HaloAdapter(TargetAdapter):
             f"({e.resource_model or 'unknown model'}).\n"
             f"Event id: {e.event_id}\n"
             f"Severity: {e.severity}\n"
-            f"Management URL: {e.mgmt_url or 'n/a'}\n"
+            f"iLO URL: {e.mgmt_url or 'n/a'}\n"
+            f"HPE GreenLake URL: {GREENLAKE_URL}\n"
             f"Time: {e.time_created or 'n/a'}"
         )
         if e.description:

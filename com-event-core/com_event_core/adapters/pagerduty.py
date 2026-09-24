@@ -27,6 +27,7 @@ import httpx
 
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
+from com_event_core.enrich.render import GREENLAKE_URL
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.pagerduty")
@@ -92,10 +93,11 @@ class PagerDutyAdapter(TargetAdapter):
                 "timestamp": e.time_created or None,
                 "custom_details": custom,
             }
+            payload["links"] = [
+                {"href": GREENLAKE_URL, "text": "Open HPE GreenLake"}
+            ]
             if e.mgmt_url:
-                payload["links"] = [
-                    {"href": e.mgmt_url, "text": "Open in HPE COM"}
-                ]
+                payload["links"].insert(0, {"href": e.mgmt_url, "text": "Open iLO"})
         return payload
 
     def forward(self, event: CanonicalEvent) -> None:

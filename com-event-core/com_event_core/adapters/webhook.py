@@ -17,6 +17,7 @@ import httpx
 
 from com_event_core.normalize import CanonicalEvent
 from com_event_core.secrets import get_secret
+from com_event_core.enrich.render import GREENLAKE_URL
 from .base import TargetAdapter
 
 log = logging.getLogger("com_event_core.adapter.webhook")
@@ -40,6 +41,7 @@ class WebhookAdapter(TargetAdapter):
 
         # Send the full canonical event so downstream systems get everything.
         body = dataclasses.asdict(event)
+        body["greenlake_url"] = GREENLAKE_URL
         with httpx.Client(timeout=self._timeout) as client:
             r = client.post(self._url, json=body, headers=headers)
             r.raise_for_status()

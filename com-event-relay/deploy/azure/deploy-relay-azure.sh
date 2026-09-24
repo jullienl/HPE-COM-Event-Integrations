@@ -19,7 +19,7 @@ SB_MAX_DELIVERY_COUNT="${SB_MAX_DELIVERY_COUNT:-10}"
 SB_MESSAGE_TTL="${SB_MESSAGE_TTL:-P14D}"
 ACA_ENV="${ACA_ENV:-aca-com-relay}"
 APP_NAME="${APP_NAME:-com-event-relay}"
-IMAGE="${IMAGE:-ghcr.io/jullienl/com-event-relay:1.0.1}"
+IMAGE="${IMAGE:-ghcr.io/jullienl/com-event-relay:1.0.2}"
 SHARED_SECRET_HEADER="${SHARED_SECRET_HEADER:-x-shim-secret}"
 SECRET="${SECRET:-$(openssl rand -hex 32)}"
 

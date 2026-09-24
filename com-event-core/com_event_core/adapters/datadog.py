@@ -30,7 +30,7 @@ import os
 
 import httpx
 
-from com_event_core.enrich.render import analysis_text
+from com_event_core.enrich.render import GREENLAKE_URL, analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -74,7 +74,8 @@ class DatadogAdapter(TargetAdapter):
         if e.resolution:
             text_lines += ["", f"Suggested resolution: {e.resolution}"]
         if e.mgmt_url:
-            text_lines += ["", f"Management URL: {e.mgmt_url}"]
+            text_lines += ["", f"iLO URL: {e.mgmt_url}"]
+        text_lines += ["", f"HPE GreenLake URL: {GREENLAKE_URL}"]
         # Optional AI analysis (empty unless an enricher ran successfully).
         analysis = analysis_text(e)
         if analysis:

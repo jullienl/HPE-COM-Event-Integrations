@@ -1649,7 +1649,7 @@ Then mount it into the container (shim or bridge):
 docker run -d --name com-event-shim --restart unless-stopped `
   -v "$env:USERPROFILE\.com-event\corp-ca-bundle.pem:/etc/ssl/certs/corp-ca.pem:ro" `
   -e SSL_CERT_FILE=/etc/ssl/certs/corp-ca.pem `
-  ghcr.io/jullienl/com-event-shim:1.0.1
+  ghcr.io/jullienl/com-event-shim:1.0.2
 ```
 
 Compose (bridge):

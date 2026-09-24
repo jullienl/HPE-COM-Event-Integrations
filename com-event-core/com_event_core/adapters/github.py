@@ -30,7 +30,13 @@ import os
 
 import httpx
 
-from com_event_core.enrich.render import ADVISORY_HEADING, HEADING, has_advisories, has_analysis
+from com_event_core.enrich.render import (
+    ADVISORY_HEADING,
+    GREENLAKE_URL,
+    HEADING,
+    has_advisories,
+    has_analysis,
+)
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -70,7 +76,8 @@ class GitHubAdapter(TargetAdapter):
             f"- **Time:** {e.time_created or 'n/a'}",
         ]
         if e.mgmt_url:
-            lines.append(f"- **Management URL:** {e.mgmt_url}")
+            lines.append(f"- [Open iLO]({e.mgmt_url})")
+        lines.append(f"- [Open HPE GreenLake]({GREENLAKE_URL})")
         if e.description:
             lines += ["", e.description]
         if e.resolution:

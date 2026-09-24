@@ -11,7 +11,7 @@ import os
 
 import httpx
 
-from com_event_core.enrich.render import analysis_text
+from com_event_core.enrich.render import GREENLAKE_URL, analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -52,6 +52,7 @@ class ObmAdapter(TargetAdapter):
             "related_ci": e.resource_serial,
             "node": e.resource_model,
             "mgmt_url": e.mgmt_url,
+            "greenlake_url": GREENLAKE_URL,
             "time_created": e.time_created,
             "description": description,
             "custom_attrs": ";".join(f"{k}={v}" for k, v in e.tags.items()),

@@ -19,7 +19,7 @@ import os
 
 import httpx
 
-from com_event_core.enrich.render import analysis_text
+from com_event_core.enrich.render import GREENLAKE_URL, analysis_text
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -58,6 +58,9 @@ class ServiceNowAdapter(TargetAdapter):
         analysis = analysis_text(e)
         if analysis:
             description = f"{description}\n\n{analysis}"
+        if e.mgmt_url:
+            description += f"\n\niLO URL: {e.mgmt_url}"
+        description += f"\nHPE GreenLake URL: {GREENLAKE_URL}"
         return {
             "source": "HPE COM",
             "event_class": "compute-ops-management",
@@ -76,6 +79,9 @@ class ServiceNowAdapter(TargetAdapter):
         analysis = analysis_text(e)
         if analysis:
             description = f"{description}\n\n{analysis}"
+        if e.mgmt_url:
+            description += f"\n\niLO URL: {e.mgmt_url}"
+        description += f"\nHPE GreenLake URL: {GREENLAKE_URL}"
         return {
             "short_description": e.title,
             "description": description,

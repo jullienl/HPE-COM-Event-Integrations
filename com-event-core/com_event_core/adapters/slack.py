@@ -20,7 +20,13 @@ import os
 
 import httpx
 
-from com_event_core.enrich.render import ADVISORY_HEADING, HEADING, has_advisories, has_analysis
+from com_event_core.enrich.render import (
+    ADVISORY_HEADING,
+    GREENLAKE_URL,
+    HEADING,
+    has_advisories,
+    has_analysis,
+)
 from com_event_core.normalize import ACTION_CLEAR, CanonicalEvent
 from com_event_core.secrets import get_secret
 from .base import TargetAdapter
@@ -36,10 +42,6 @@ _COLOR = {
     "normal": "#43A047",
 }
 _RESOLVED_COLOR = "#43A047"
-
-# HPE GreenLake / Compute Ops Management console (same URL for every tenant).
-_GREENLAKE_URL = "https://common.cloud.hpe.com/"
-
 
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "\u2026"
@@ -142,7 +144,7 @@ class SlackAdapter(TargetAdapter):
         elements.append({
             "type": "button",
             "text": {"type": "plain_text", "text": "Open HPE GreenLake"},
-            "url": _GREENLAKE_URL,
+            "url": GREENLAKE_URL,
         })
         blocks.append({"type": "actions", "elements": elements})
 

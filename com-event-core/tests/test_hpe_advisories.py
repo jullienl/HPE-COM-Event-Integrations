@@ -15,6 +15,7 @@ from com_event_core.enrich import compliance as compliance_mod
 from com_event_core.enrich.hpe_advisories import HpeAdvisoriesEnricher, _relevant
 from com_event_core.enrich.render import (
     ADVISORY_HEADING,
+    GREENLAKE_URL,
     advisory_lines,
     advisory_text,
     has_advisories,
@@ -535,6 +536,15 @@ class TestRendering:
             "Fan fault" in str(b) for b in blocks
         ), "advisory block missing from Slack message"
 
+    def test_github_adapter_renders_both_navigation_links(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_REPO", "acme/events")
+        monkeypatch.setenv("GITHUB_TOKEN", "tok")
+        from com_event_core.adapters.github import GitHubAdapter
+
+        body = GitHubAdapter()._body(_event())
+        assert "- [Open iLO](https://10.0.0.5)" in body
+        assert f"- [Open HPE GreenLake]({GREENLAKE_URL})" in body
+
     def test_jira_adapter_renders_advisory_heading(self, monkeypatch):
         monkeypatch.setenv("JIRA_URL", "https://acme.atlassian.net")
         monkeypatch.setenv("JIRA_EMAIL", "a@b.com")
@@ -565,6 +575,16 @@ class TestRendering:
             "type": "link",
             "attrs": {"href": "https://support.hpe.com/ca-1"},
         }]
+        navigation_hrefs = [
+            mark["attrs"]["href"]
+            for node in doc["content"]
+            if node.get("type") == "paragraph"
+            for item in node.get("content", [])
+            for mark in item.get("marks", [])
+            if mark.get("type") == "link"
+        ]
+        assert "https://10.0.0.5" in navigation_hrefs
+        assert GREENLAKE_URL in navigation_hrefs
 
     def test_elastic_adapter_includes_advisory_references(self, monkeypatch):
         monkeypatch.setenv("ELASTIC_URL", "https://es.test:9200")
