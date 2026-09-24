@@ -419,6 +419,8 @@ Any service implementing that contract can be used instead.
 
 The report keeps **observed facts**, the specific signals found in the data, separate from **hypothesis**: it proposes a likely root cause, assesses its own confidence in that cause, and recommends further diagnostic checks and concrete remediation actions, without presenting an unverified guess as a definitive conclusion. Intelligent, event-driven operations, not just event forwarding.
 
+<img src="docs/images/ai-analysis-diagram.png" alt="AI-assisted incident investigation and enrichment" />
+
 ### How the analysis is built
 
 COM provides the event and the affected server's state transition, but the
