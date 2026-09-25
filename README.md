@@ -4,6 +4,15 @@ Securely integrate **HPE Compute Ops Management (COM)** webhook events with **IT
 
 The framework provides webhook validation, authentication, payload normalization, de-duplication, reliable delivery, raise/clear event correlation, and multiple deployment options, including an architecture that requires **no inbound network ports to be opened**.
 
+<img src="docs/images/com-event-integration-diagram.png" alt="COM event integration architecture" width="1000" />
+
+Two deployment scenarios are available:
+
+- **Relay + Shim**: use a managed public cloud edge and keep your network outbound-only.
+- **Bridge**: host the public HTTPS endpoint yourself with a single all-in-one receiver.
+
+<img src="docs/images/com-event-integration-2-scenarios-diagram.png" alt="Two COM integration deployment scenarios" width="1000" />
+
 The framework uses a shared `CanonicalEvent` model and a **rich, growing library of pluggable target adapters**: small, reusable components that translate normalized COM events into the API or webhook format expected by each destination. A single COM event can be **delivered simultaneously to multiple targets**, allowing the same event to trigger different workflows across ITSM, SIEM, monitoring, and collaboration platforms. COM-specific processing is implemented only once, while the same normalization, correlation, retry, and delivery logic is reused across all configured destinations. **New adapters can typically be added in minutes rather than days, with only a small amount of target-specific code.**
 
 It also brings **AI-assisted incident investigation and remediation** to those deliveries: an optional stage where an AI agent analyzes the collected hardware evidence for a COM event and produces a structured incident report, observed facts kept separate from hypothesis, a likely root cause, a confidence assessment, and recommended diagnostic and remediation steps, attached to the ticket or chat message **before it is even created**. This turns event-driven operations from "a server is unhealthy" into "here's what's likely wrong, how sure we are, and what to do next." See [AI-assisted incident investigation and remediation](#ai-assisted-incident-investigation-and-remediation).
@@ -18,17 +27,6 @@ It ships as **ready-to-run, multi-architecture container images** published to *
 
 ---
 
-## At a glance
-
-<img src="docs/images/at-glance-diagram.png" alt="At glance architecture" width="1000" />
-
-Two deployment models are available:
-
-- **Relay + Shim**: use a managed public cloud edge and keep your network outbound-only.
-- **Bridge**: run a single all-in-one receiver when you can expose an HTTPS endpoint that COM can reach.
-
-Both models share the same normalisation, de-duplication, correlation, and target-adapter logic from `com-event-core`.
-
 ---
 
 ## Contents
@@ -38,6 +36,7 @@ Both models share the same normalisation, de-duplication, correlation, and targe
 - [How it works](#how-it-works)
 - [Typical use cases](#typical-use-cases)
 - [Quick start](#quick-start)
+- [At a glance](#at-a-glance)
 - [Deployment models](#deployment-models)
 - [Which deployment should I choose?](#which-deployment-should-i-choose)
 - [Supported integrations](#supported-integrations)
@@ -218,6 +217,17 @@ Follow an end-to-end deployment runbook:
 ---
 
 # Deployment models
+
+## At a glance
+
+<img src="docs/images/at-glance-diagram.png" alt="At glance architecture" width="1000" />
+
+Two deployment models are available:
+
+- **Relay + Shim**: use a managed public cloud edge and keep your network outbound-only.
+- **Bridge**: run a single all-in-one receiver when you can expose an HTTPS endpoint that COM can reach.
+
+Both models share the same normalisation, de-duplication, correlation, and target-adapter logic from `com-event-core`.
 
 ## 1. Relay + Shim
 
