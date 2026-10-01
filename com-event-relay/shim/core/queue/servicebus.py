@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Iterator
 
-from azure.servicebus import ServiceBusClient
+from azure.servicebus import ServiceBusClient, TransportType
 
 from com_event_core import get_secret
 from .base import QueueConsumer, ReceivedMessage
@@ -18,13 +18,19 @@ class ServiceBusConsumer(QueueConsumer):
         SERVICE_BUS_CONNECTION  Listen-scoped connection string.
         QUEUE_NAME              Queue to drain (e.g. com-events).
         RECEIVE_MAX_WAIT        Seconds to wait for messages before looping (default 30).
+        SERVICE_BUS_TRANSPORT   "websocket" to use AMQP over WebSockets (TCP 443)
+                                when outbound 5671 is blocked; default is AMQP (5671).
     """
 
     def __init__(self) -> None:
         self._conn = get_secret("SERVICE_BUS_CONNECTION")
         self._queue = os.environ["QUEUE_NAME"]
         self._max_wait = int(os.environ.get("RECEIVE_MAX_WAIT", "30"))
-        self._client = ServiceBusClient.from_connection_string(self._conn)
+        use_ws = os.environ.get("SERVICE_BUS_TRANSPORT", "").strip().lower() in ("websocket", "websockets", "ws")
+        self._client = ServiceBusClient.from_connection_string(
+            self._conn,
+            transport_type=TransportType.AmqpOverWebsocket if use_ws else TransportType.Amqp,
+        )
         self._receiver = self._client.get_queue_receiver(
             queue_name=self._queue, max_wait_time=self._max_wait
         )

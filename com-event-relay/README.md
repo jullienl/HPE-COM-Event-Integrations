@@ -411,7 +411,7 @@ These values determine how long a target can remain unavailable before messages 
 
 No inbound connection into your environment is required.
 
-If your network only permits HTTPS/443 egress, configure Azure Service Bus clients to use AMQP-over-WebSockets where appropriate.
+If your network only permits HTTPS/443 egress, set `SERVICE_BUS_TRANSPORT=websocket` on the Shim (image `1.0.3` or later) to use AMQP-over-WebSockets on 443.
 
 ---
 
@@ -617,6 +617,7 @@ Where possible, prefer **cloud workload identity** — an Azure Managed Identity
 | `AWS_REGION` | sqs path | — | AWS region |
 | `TARGETS` | No | `webhook` | One or more target adapter names, comma-separated |
 | `TARGET_TIMEOUT` | No | `15` | Per-target HTTP timeout, in seconds |
+| `SERVICE_BUS_TRANSPORT` | No | `amqp` | Azure Service Bus only. Set to `websocket` to use AMQP over WebSockets (TCP 443) when outbound `5671` is blocked. Needs shim image `1.0.3` or later |
 | `RECEIVE_MAX_WAIT` | No | `20` SQS / `30` Azure | Long-poll wait window per receive call, in seconds. Bounds *idle* waiting only — not a poll interval; see [Queue consumption and delivery latency](#queue-consumption-and-delivery-latency) |
 | `SERVER_MONITORS` | No | `health` | Server conditions interpreted by Core |
 | `DEDUP_DB_PATH` | No | `/data/dedup.db` | SQLite dedup database (container default) |
