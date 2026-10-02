@@ -495,7 +495,7 @@ connection string from step 2 and your GitHub details.
 > | GitHub API (`api.github.com`) | HTTPS | **443** |
 >
 > Service Bus uses AMQP on **5671** by default; if your egress policy only allows
-> `443`, add `-e SERVICE_BUS_TRANSPORT=websocket` (shim image `1.0.3` or later) to
+> `443`, add `-e SERVICE_BUS_TRANSPORT=websocket` (shim image `1.0.4` or later) to
 > use AMQP-over-WebSockets on **443**. A blocked `5671` shows up as
 > `ServiceBusConnectionError ... amqp:socket-error` (timed out) at start-up.
 > GitHub (and any other target adapter) is plain HTTPS on **443**.
@@ -534,7 +534,7 @@ docker run --rm --name com-event-shim `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:1.0.3
+  ghcr.io/jullienl/com-event-shim:1.0.4
 ```
 
 The shim logs each message it drains, the events it normalises, and the forward
@@ -583,7 +583,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:1.0.3
+  ghcr.io/jullienl/com-event-shim:1.0.4
 ```
 
 > **Secrets from files (vault) — recommended for production.** Every sensitive
@@ -606,7 +606,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
 >   -e GITHUB_REPO=your-org/com-issues `
 >   -e GITHUB_TOKEN_FILE=/run/secrets/github-token `
 >   -e SERVER_MONITORS=health `
->   ghcr.io/jullienl/com-event-shim:1.0.3
+>   ghcr.io/jullienl/com-event-shim:1.0.4
 > ```
 >
 > On **Kubernetes** mount an Azure Key Vault secret via the **Secrets Store CSI

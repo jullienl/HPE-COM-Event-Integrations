@@ -661,7 +661,7 @@ docker run --rm --name com-event-shim `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:1.0.3
+  ghcr.io/jullienl/com-event-shim:1.0.4
 ```
 
 The shim logs each message it drains, the events it normalises, and the forward
@@ -715,7 +715,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:1.0.3
+  ghcr.io/jullienl/com-event-shim:1.0.4
 ```
 
 > **Credentials hygiene:** injecting keys as env vars is fine for a quick test;
@@ -749,7 +749,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
 >   -e GITHUB_REPO=your-org/com-issues `
 >   -e GITHUB_TOKEN_FILE=/run/secrets/github-token `
 >   -e SERVER_MONITORS=health `
->   ghcr.io/jullienl/com-event-shim:1.0.3
+>   ghcr.io/jullienl/com-event-shim:1.0.4
 > ```
 >
 > On **EKS** mount an AWS Secrets Manager secret via the **Secrets Store CSI

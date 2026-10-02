@@ -4,5 +4,7 @@
 #   pip install -e ../../com-event-core
 # Azure backend
 azure-servicebus==7.12.3
+# Needed by azure-servicebus for SERVICE_BUS_TRANSPORT=websocket (AMQP over 443)
+websocket-client==1.9.2
 # AWS backend
 boto3==1.35.24
