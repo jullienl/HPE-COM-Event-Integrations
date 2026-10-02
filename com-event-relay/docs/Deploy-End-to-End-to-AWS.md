@@ -134,9 +134,9 @@ $APP    = "com-event-relay"                                          # App Runne
 $HDR    = "x-shim-secret"                                            # HTTP header COM sends carrying the shared secret (auth on every POST)
 
 $ACCOUNT    = aws sts get-caller-identity --query Account --output text                    # your 12-digit AWS account ID
-$GHCR_IMAGE = "ghcr.io/jullienl/com-event-relay:1.0.2"               # upstream image published by CI (App Runner can't pull this directly)
+$GHCR_IMAGE = "ghcr.io/jullienl/com-event-relay:1.0.4"               # upstream image published by CI (App Runner can't pull this directly)
 $ECR_REPO   = "com-event-relay"                                       # your private ECR repo name (created in step 3.1)
-$IMAGE      = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:1.0.2"   # the ECR image App Runner actually pulls (mirror target)
+$IMAGE      = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:1.0.4"   # the ECR image App Runner actually pulls (mirror target)
 
 # 32-byte (64 hex char) shared secret, no openssl needed on Windows:
 $SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
@@ -169,7 +169,7 @@ WSL with Docker Desktop integration, or a Linux Docker host for the mirror step.
 cd com-event-relay/deploy/aws
 
 # Run it — pass your ECR image URI + the two role ARNs (Option B steps 2 and 3.2)
-IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:1.0.2 \
+IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/com-event-relay:1.0.4 \
 INSTANCE_ROLE_ARN=<role-from-Option-B-step-2> \
 ACCESS_ROLE_ARN=<role-from-Option-B-step-3.2> \
 AWS_REGION=eu-west-1 \
@@ -384,7 +384,7 @@ aws apprunner describe-service --service-arn $SERVICE_ARN --region $REGION `
 > scale-to-zero cold-start to worry about.
 
 **Updating the relay later.** When CI publishes a new GHCR image, re-run the
-mirror (step 3.1) to copy `:1.0.2` into ECR, then trigger a fresh App Runner
+mirror (step 3.1) to copy `:1.0.4` into ECR, then trigger a fresh App Runner
 deployment:
 `aws apprunner start-deployment --service-arn $SERVICE_ARN --region $REGION`.
 
