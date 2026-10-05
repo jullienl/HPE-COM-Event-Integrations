@@ -534,7 +534,7 @@ docker run --rm --name com-event-shim `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:1.0.4
+  ghcr.io/jullienl/com-event-shim:1.0.5
 ```
 
 The shim logs each message it drains, the events it normalises, and the forward
@@ -583,7 +583,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
   -e GITHUB_REPO=your-org/com-issues `
   -e GITHUB_TOKEN=<your-fine-grained-PAT> `
   -e SERVER_MONITORS=health `
-  ghcr.io/jullienl/com-event-shim:1.0.4
+  ghcr.io/jullienl/com-event-shim:1.0.5
 ```
 
 > **Secrets from files (vault) — recommended for production.** Every sensitive
@@ -606,7 +606,7 @@ docker run -d --name com-event-shim --restart unless-stopped `
 >   -e GITHUB_REPO=your-org/com-issues `
 >   -e GITHUB_TOKEN_FILE=/run/secrets/github-token `
 >   -e SERVER_MONITORS=health `
->   ghcr.io/jullienl/com-event-shim:1.0.4
+>   ghcr.io/jullienl/com-event-shim:1.0.5
 > ```
 >
 > On **Kubernetes** mount an Azure Key Vault secret via the **Secrets Store CSI

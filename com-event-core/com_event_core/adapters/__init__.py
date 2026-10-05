@@ -19,6 +19,7 @@ _ADAPTERS = {
     "splunk": ("com_event_core.adapters.splunk", "SplunkAdapter"),
     "github": ("com_event_core.adapters.github", "GitHubAdapter"),
     "slack": ("com_event_core.adapters.slack", "SlackAdapter"),
+    "mattermost": ("com_event_core.adapters.mattermost", "MattermostAdapter"),
     "teams": ("com_event_core.adapters.teams", "TeamsAdapter"),
     "jira": ("com_event_core.adapters.jira", "JiraAdapter"),
     "pagerduty": ("com_event_core.adapters.pagerduty", "PagerDutyAdapter"),

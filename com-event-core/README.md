@@ -388,7 +388,7 @@ A condition not listed in `SERVER_MONITORS` is ignored.
 
 Because server webhooks are snapshots, a healthy condition can generate repeated clear candidates. The de-duplication layer suppresses repeated equivalent clears.
 
-> **Post-only chat adapters (`slack`, `teams`) show a `Resolved` message for every
+> **Post-only chat adapters (`slack`, `mattermost`, `teams`) show a `Resolved` message for every
 > enabled-but-healthy condition.** Stateful adapters (`github`, ITSM, ...) *search*
 > for the item a clear would close and silently no-op when none is open, so a
 > healthy condition is invisible there. A post-only incoming webhook has no such
@@ -609,6 +609,7 @@ github
 grafana
 halo
 jira
+mattermost
 obm
 opsramp
 pagerduty
@@ -647,6 +648,7 @@ The **Category** column groups adapters by the kind of platform they target:
 | `sentinel` | SIEM | Microsoft Sentinel / Log Analytics | Workspace credentials | — | Ingested as another record | ⚠️ Validate |
 | `pagerduty` | Incident response | PagerDuty Events API v2 | Routing key | — | Sends `resolve` using the same `dedup_key` | ⚠️ Validate |
 | `slack` | ChatOps | Slack incoming webhook | Webhook URL | — | Posts a resolved notification | ✅ |
+| `mattermost` | ChatOps | Mattermost incoming webhook (message attachments) | Webhook URL | — | Posts a resolved notification | ✅ |
 | `teams` | ChatOps | Microsoft Teams Workflow webhook | Webhook URL | — | Posts a resolved card | ✅ |
 | `github` | Issue tracking | GitHub Issues | PAT | — | Closes the matching issue | ✅ |
 | `datadog` | Monitoring | Datadog Events API | API key | — | Posts a recovery/success event | ⚠️ Validate |
@@ -655,7 +657,7 @@ The **Category** column groups adapters by the kind of platform they target:
 | `webhook` | Generic | Canonical JSON POST | Optional custom header | — | Sends the canonical clear event | ⚠️ Validate |
 
 
-> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending for most is **validation against a live product**: the **GitHub**, **Slack**, **Teams**, and **Jira** adapters have been exercised end-to-end against a real target so far (raise *and* clear); the others have not yet been tested against a live instance (standing up every one of these platforms in a lab isn't feasible, and several also require paid licenses). Validate each adapter against your own environment before production use. Useful validation feedback includes authentication, payload acceptance, object creation, de-duplication, raise/clear behavior, and tenant-specific settings. Tenant-specific tuning is covered in [Known per-target tuning](#known-per-target-tuning).
+> ⚠️ **Reference implementations.** Every adapter is fully implemented against its target's API — connectivity, field mapping, authentication, and raise/clear handling are all in place. What is still pending for most is **validation against a live product**: the **GitHub**, **Slack**, **Mattermost**, **Teams**, and **Jira** adapters have been exercised end-to-end against a real target so far (raise *and* clear); the others have not yet been tested against a live instance (standing up every one of these platforms in a lab isn't feasible, and several also require paid licenses). Validate each adapter against your own environment before production use. Useful validation feedback includes authentication, payload acceptance, object creation, de-duplication, raise/clear behavior, and tenant-specific settings. Tenant-specific tuning is covered in [Known per-target tuning](#known-per-target-tuning).
 >
 > 🙋 Contributions and live-tenant validation feedback are welcome. If you face any issue with an adapter integration, please [open an issue](https://github.com/jullienl/HPE-COM-Event-Integrations/issues) in the project.
 
@@ -701,7 +703,7 @@ one file shows its full contract in a few lines:
 - `os.environ.get("VAR", "default")` → **optional** with a default
 - `get_secret("VAR")` → **secret** (accepts `VAR` or `VAR_FILE`)
 
-> **Two gotchas.** Only `github`, `slack`, `teams`, and `jira` are validated
+> **Two gotchas.** Only `github`, `slack`, `mattermost`, `teams`, and `jira` are validated
 > end-to-end, so other adapters' instance-specific vars (Halo status ids,
 > ServiceNow table, …) may need tuning for your system — see [Known per-target
 > tuning](#known-per-target-tuning). And
@@ -1649,7 +1651,7 @@ Then mount it into the container (shim or bridge):
 docker run -d --name com-event-shim --restart unless-stopped `
   -v "$env:USERPROFILE\.com-event\corp-ca-bundle.pem:/etc/ssl/certs/corp-ca.pem:ro" `
   -e SSL_CERT_FILE=/etc/ssl/certs/corp-ca.pem `
-  ghcr.io/jullienl/com-event-shim:1.0.4
+  ghcr.io/jullienl/com-event-shim:1.0.5
 ```
 
 Compose (bridge):
@@ -2109,7 +2111,7 @@ WEBHOOK__ARCHIVE_URL=...
 
 ## Live-target validation
 
-The `github`, `slack`, `teams`, and `jira` adapters have been validated
+The `github`, `slack`, `mattermost`, `teams`, and `jira` adapters have been validated
 end-to-end against live targets — both the raise and the clear path. The
 remaining adapters still need broader live-tenant testing.
 
