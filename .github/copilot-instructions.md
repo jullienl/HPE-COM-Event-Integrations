@@ -8,6 +8,14 @@ Concise, rule-shaped guidance for working in this repo. Keep additions terse.
   improvement, present 2-3 options with trade-offs and a recommendation, then
   wait for the maintainer's decision. Diagnosis and read-only checks need no
   approval.
+- **Before publishing a release, check every file for the previous version.**
+  Search the whole repo, ignored folders included, for the old version string
+  and for every pinned image tag (compose files, scripts, READMEs, runbooks,
+  guides, station/config generators). List each hit as "update" or "keep, with
+  the reason" (an image with its own version, a minimum-version statement,
+  archived docs) and get the maintainer's approval before changing pins. Pin
+  updates that reference a new image wait until that image is published and
+  pullable.
 
 ## Customer-facing documentation and image publication
 
