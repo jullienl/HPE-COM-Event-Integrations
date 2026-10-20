@@ -40,7 +40,7 @@ import time
 
 from .advisories import fetch_and_parse_advisories
 from .base import Enricher
-from .compliance import get_ui_doorway_compliance, resolve_compliance
+from .compliance import resolve_compliance
 from ..com_client import ComClient
 from ..normalize import ACTION_RAISE, CanonicalEvent
 
@@ -184,11 +184,7 @@ class HpeAdvisoriesEnricher(Enricher):
     def enrich(self, event: CanonicalEvent) -> None:
         bundle_ref = self._resolve_bundle_ref(event)
         if not bundle_ref:
-            log.info(
-                "event %s: no firmware bundle reference available; skipping "
-                "advisory lookup", event.event_id,
-            )
-            return
+            return  # _resolve_bundle_ref already logged the reason
 
         cached = self._cache.get(bundle_ref)
         if cached is not None:
@@ -225,18 +221,10 @@ class HpeAdvisoriesEnricher(Enricher):
         try:
             with ComClient() as client:
                 compliance = resolve_compliance(client, device_id)
-                if compliance is None:
-                    log.info(
-                        "event %s: no group compliance record for %s; trying "
-                        "server-level UI-doorway compliance fallback",
-                        event.event_id, device_id,
-                    )
-                    compliance = get_ui_doorway_compliance(client, device_id)
         except Exception as e:
-            boundary = "UI-doorway" if "UI-doorway" in str(e) else "COM group"
             log.warning(
-                "event %s: %s compliance lookup failed (%s); continuing "
-                "without a compliance signal", event.event_id, boundary, e,
+                "event %s: COM group compliance lookup failed (%s); continuing "
+                "without a compliance signal", event.event_id, e,
             )
             return None
 
@@ -265,6 +253,10 @@ class HpeAdvisoriesEnricher(Enricher):
 
         server_id = raw.get("id") or event.event_id
         if not server_id:
+            log.info(
+                "event %s: no server id on the event; skipping advisory lookup",
+                event.event_id,
+            )
             return None
         try:
             with ComClient() as client:
@@ -285,25 +277,12 @@ class HpeAdvisoriesEnricher(Enricher):
         if ref:
             return ref
 
-        # Some devices expose no bundle reference on the public server shape.
-        # The GreenLake UI's server-level report still identifies the derived
-        # baseline; use that bundle id to continue to the normal COM bundle
-        # endpoint and its advisories URL.
-        try:
-            with ComClient() as client:
-                ui_report = client.get_ui_doorway_server(server_id)
-            baseline_id = ((ui_report.get("baselineDerived_") or {}).get("id"))
-            if baseline_id:
-                log.info(
-                    "event %s: using UI-doorway baseline %s as firmware bundle "
-                    "fallback", event.event_id, baseline_id,
-                )
-                return f"/v1/firmware-bundles/{baseline_id}"
-        except Exception as e:
-            log.warning(
-                "event %s: UI-doorway firmware baseline fallback failed (%s); "
-                "skipping advisory lookup", event.event_id, e,
-            )
+        log.info(
+            "event %s: no firmware baseline is attached to server %s in COM (it "
+            "has no firmwareBundleUri and no firmware update on record), so HPE "
+            "advisories cannot be collected for it; continuing without them",
+            event.event_id, server_id,
+        )
         return None
 
     def _fetch(self, bundle_ref: str) -> dict | None:

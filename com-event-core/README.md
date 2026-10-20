@@ -1408,7 +1408,11 @@ to; the error message names this explicitly rather than just the status code.
    `GET /servers/{id}?select=firmwareBundleUri,lastFirmwareUpdate,`
    `firmwareInventory,hardware,serverGeneration` lookup. A deployment with
    neither the payload fields nor COM API access simply skips this enricher
-   for every event — a normal, logged skip, not an error.
+   for every event — a normal, logged skip, not an error. A server that COM
+   holds no firmware baseline for (no `firmwareBundleUri` and no firmware update
+   on record, for example because it was never updated through COM) is skipped
+   the same way, with the log line `no firmware baseline is attached to server
+   <id> in COM ... HPE advisories cannot be collected for it`.
 2. **Bundle metadata + advisories link**, via
    `GET /compute-ops-mgmt/v1/firmware-bundles/{id}` — `displayName`,
    `releaseVersion`, `releaseDate`, `bundleGeneration`, `supportUrl`, and the

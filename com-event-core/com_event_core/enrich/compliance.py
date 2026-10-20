@@ -25,48 +25,6 @@ log = logging.getLogger("com_event_core.enrich.compliance")
 _PAGE_SIZE = 100
 
 
-def get_ui_doorway_compliance(client: ComClient, device_id: str) -> dict | None:
-    """Normalize the server-level compliance report exposed by the GreenLake UI.
-
-    This is a fallback for devices that have no group. The UI response carries
-    the installed/baseline bundle under ``baselineDerived_`` and the device's
-    score/deviations under ``serverFirmwareCompliance_``. Missing compliance
-    data is a normal ``None`` result; endpoint/shape failures are allowed to
-    propagate as ``ComUiDoorwayError`` so the caller can identify the boundary
-    that drifted while still failing open for delivery.
-    """
-    body = client.get_ui_doorway_server(device_id)
-    baseline = body.get("baselineDerived_") or {}
-    report = body.get("serverFirmwareCompliance_") or {}
-    if not baseline and not report:
-        return None
-    if not isinstance(baseline, dict) or not isinstance(report, dict):
-        raise ValueError("UI-doorway compliance fields are not JSON objects")
-
-    return {
-        "source": "server_ui_doorway",
-        "group_id": None,
-        "group_name": None,
-        "group_firmware_status": report.get("complianceState"),
-        "assigned_bundle_id": report.get("bundleId"),
-        "baseline_bundle_id": baseline.get("id"),
-        "baseline_release_version": baseline.get("releaseVersion"),
-        "baseline_display_name": baseline.get("displayName"),
-        "compliance_state": report.get("complianceState"),
-        "score": report.get("score"),
-        "deviations": [
-            {
-                "category": d.get("category"),
-                "component": d.get("componentName"),
-                "expected_version": d.get("recommendedVersion"),
-                "installed_version": d.get("installedVersion"),
-            }
-            for d in (report.get("deviations") or [])
-            if isinstance(d, dict)
-        ],
-    }
-
-
 def find_group_for_device(client: ComClient, device_id: str, *, max_groups: int = 500) -> dict | None:
     """Return the first group whose `devices` list contains `device_id`, else None.
 

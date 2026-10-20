@@ -57,7 +57,7 @@ class TestBundleRefResolution:
         enricher = HpeAdvisoriesEnricher.__new__(HpeAdvisoriesEnricher)
         assert enricher._resolve_bundle_ref(e) == "/fw/xyz"
 
-    def test_falls_back_to_ui_doorway_baseline_when_public_server_has_no_bundle(self, monkeypatch):
+    def test_logs_clear_reason_when_server_has_no_firmware_baseline(self, monkeypatch, caplog):
         e = _event(raw={"id": "srv-1"})
         enricher = HpeAdvisoriesEnricher.__new__(HpeAdvisoriesEnricher)
 
@@ -71,13 +71,13 @@ class TestBundleRefResolution:
             def get_server(self, server_id, select=None):
                 return {}
 
-            def get_ui_doorway_server(self, server_id):
-                return {"baselineDerived_": {"id": "baseline-1"}}
-
         monkeypatch.setattr(
             "com_event_core.enrich.hpe_advisories.ComClient", lambda: Client()
         )
-        assert enricher._resolve_bundle_ref(e) == "/v1/firmware-bundles/baseline-1"
+        with caplog.at_level("INFO", logger="com_event_core.enrich.hpe_advisories"):
+            assert enricher._resolve_bundle_ref(e) is None
+        assert "no firmware baseline is attached to server srv-1" in caplog.text
+        assert "HPE advisories cannot be collected" in caplog.text
 
     def test_none_when_neither_present_and_no_com_config(self, monkeypatch):
         monkeypatch.delenv("COM_BASE_URL", raising=False)
@@ -624,10 +624,9 @@ _COMPLIANCE_PAGE = {
 
 
 class FakeComplianceClient:
-    def __init__(self, groups_pages, compliance_page, ui_doorway=None):
+    def __init__(self, groups_pages, compliance_page):
         self._groups_pages = groups_pages
         self._compliance_page = compliance_page
-        self._ui_doorway = ui_doorway
 
     def list_groups(self, *, limit=100, offset=0):
         idx = offset // limit if limit else 0
@@ -635,11 +634,6 @@ class FakeComplianceClient:
 
     def get_group_compliance(self, group_id, *, limit=100, offset=0):
         return self._compliance_page
-
-    def get_ui_doorway_server(self, device_id):
-        if isinstance(self._ui_doorway, Exception):
-            raise self._ui_doorway
-        return self._ui_doorway or {}
 
 
 class TestGroupCompliance:
@@ -673,40 +667,6 @@ class TestGroupCompliance:
     def test_resolve_compliance_none_when_no_group(self):
         client = FakeComplianceClient([{"items": [], "total": 0}], _COMPLIANCE_PAGE)
         assert compliance_mod.resolve_compliance(client, "srv-1") is None
-
-    def test_ui_doorway_compliance_normalizes_server_report(self):
-        client = FakeComplianceClient([], _COMPLIANCE_PAGE, {
-            "baselineDerived_": {
-                "releaseVersion": "2025.01.00.00",
-                "displayName": "SPP 2025.01.00.00 (24 Jan 2025)",
-                "id": "bundle-baseline",
-            },
-            "serverFirmwareCompliance_": {
-                "score": 75,
-                "bundleId": "bundle-baseline",
-                "complianceState": "Not Compliant",
-                "deviations": [{
-                    "componentName": "System ROM",
-                    "recommendedVersion": "v3.34",
-                    "installedVersion": "v3.66",
-                }],
-            },
-        })
-        result = compliance_mod.get_ui_doorway_compliance(client, "srv-1")
-        assert result["source"] == "server_ui_doorway"
-        assert result["compliance_state"] == "Not Compliant"
-        assert result["score"] == 75
-        assert result["baseline_release_version"] == "2025.01.00.00"
-        assert result["deviations"] == [{
-            "category": None,
-            "component": "System ROM",
-            "expected_version": "v3.34",
-            "installed_version": "v3.66",
-        }]
-
-    def test_ui_doorway_compliance_empty_report_returns_none(self):
-        client = FakeComplianceClient([], _COMPLIANCE_PAGE, {})
-        assert compliance_mod.get_ui_doorway_compliance(client, "srv-1") is None
 
     def test_enrich_attaches_compliance_evidence(self, monkeypatch):
         e = _event(raw={"id": "srv-1", "firmwareBundleUri": "/fw/1"})
@@ -760,59 +720,3 @@ class TestGroupCompliance:
         enricher.enrich(e)  # must not raise
         assert e.advisory_evidence["compliance"] is None
         assert e.advisory_evidence["bundle"]["id"] == "bundle-1"
-
-    def test_enrich_uses_ui_doorway_when_device_has_no_group(self, monkeypatch):
-        e = _event(raw={"id": "srv-1", "firmwareBundleUri": "/fw/1"})
-        enricher = HpeAdvisoriesEnricher()
-
-        class UiFallbackClient(FakeComplianceClient):
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def get_firmware_bundle(self, ref):
-                return {"id": "bundle-1", "advisories": None}
-
-        ui_report = {
-            "baselineDerived_": {"id": "bundle-baseline", "releaseVersion": "2025.01.00.00"},
-            "serverFirmwareCompliance_": {
-                "score": 75,
-                "bundleId": "bundle-baseline",
-                "complianceState": "Not Compliant",
-                "deviations": [],
-            },
-        }
-        monkeypatch.setattr(
-            "com_event_core.enrich.hpe_advisories.ComClient",
-            lambda: UiFallbackClient([{"items": [], "total": 0}], _COMPLIANCE_PAGE, ui_report),
-        )
-        enricher.enrich(e)
-        assert e.advisory_evidence["compliance"]["source"] == "server_ui_doorway"
-        assert e.advisory_evidence["compliance"]["score"] == 75
-
-    def test_ui_doorway_failure_is_identifiable_and_fail_open(self, monkeypatch, caplog):
-        e = _event(raw={"id": "srv-1", "firmwareBundleUri": "/fw/1"})
-        enricher = HpeAdvisoriesEnricher()
-
-        class BrokenUiClient(FakeComplianceClient):
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def get_firmware_bundle(self, ref):
-                return {"id": "bundle-1", "advisories": None}
-
-            def get_ui_doorway_server(self, device_id):
-                raise RuntimeError("COM UI-doorway compliance fallback failed: HTTP 404")
-
-        monkeypatch.setattr(
-            "com_event_core.enrich.hpe_advisories.ComClient",
-            lambda: BrokenUiClient([{"items": [], "total": 0}], _COMPLIANCE_PAGE),
-        )
-        enricher.enrich(e)
-        assert e.advisory_evidence["compliance"] is None
-        assert "UI-doorway compliance lookup failed" in caplog.text

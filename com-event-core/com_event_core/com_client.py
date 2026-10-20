@@ -33,7 +33,7 @@ import logging
 import os
 import threading
 import time
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
@@ -54,10 +54,6 @@ _REFRESH_MARGIN_SECONDS = 60
 
 class ComApiError(RuntimeError):
     """A COM API call failed; the message includes the body HPE sent back."""
-
-
-class ComUiDoorwayError(ComApiError):
-    """The internal UI-doorway compliance fallback failed or changed shape."""
 
 
 class _TokenCache:
@@ -227,35 +223,6 @@ class ComClient:
     def get_server(self, server_id: str, select: str | None = None) -> dict:
         params = {"select": select} if select else None
         return self.get(f"/compute-ops-mgmt/v1/servers/{server_id}", params=params)
-
-    def get_ui_doorway_server(self, server_id: str) -> dict:
-        """Fetch the server-level compliance report used by the GreenLake UI.
-
-        This is intentionally isolated from the public COM methods because it
-        is a UI-doorway fallback, not the primary API contract. Its exception
-        type and message identify that boundary explicitly when the endpoint
-        changes or disappears, while callers can still fail open.
-        """
-        path = f"/api/ui-doorway/compute/v2/servers/{quote(server_id, safe='')}"
-        url = f"{self._base}{path}"
-        try:
-            response = self._client.get(url)
-            _check(response, f"UI-doorway GET {path}")
-            body = response.json()
-        except ComApiError as exc:
-            raise ComUiDoorwayError(
-                f"COM UI-doorway compliance fallback failed for {path}: {exc}"
-            ) from exc
-        except (ValueError, TypeError) as exc:
-            raise ComUiDoorwayError(
-                f"COM UI-doorway compliance fallback returned invalid JSON for {path}: {exc}"
-            ) from exc
-        if not isinstance(body, dict):
-            raise ComUiDoorwayError(
-                f"COM UI-doorway compliance fallback returned {type(body).__name__}, "
-                f"expected an object for {path}"
-            )
-        return body
 
     def get_firmware_bundle(self, bundle_ref: str) -> dict:
         """Fetch a firmware bundle by id, bare path, or full resource URI.
