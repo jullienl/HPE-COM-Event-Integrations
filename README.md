@@ -663,8 +663,9 @@ is a supported pattern. It does not, by itself, reduce total message volume
 - **Independent failure domains.** A stuck target, a full spool, or an
   exhausted AI budget for one condition's deployment doesn't affect another.
 
-**What it costs:** each split-out deployment needs its own pair of COM
-webhook subscriptions (raise + clear) for that transition, its own
+**What it costs:** each split-out deployment needs COM webhook filters covering
+both problems and recoveries for its monitored conditions, using a raise/clear
+pair or [one broader filter](com-event-core/README.md#one-webhook-for-multiple-conditions-and-both-states), its own
 container/process, and its own secrets, adding more moving parts to deploy
 and monitor than one deployment with several conditions enabled. For
 **Relay + Shim**, each split deployment also needs its **own queue**: a

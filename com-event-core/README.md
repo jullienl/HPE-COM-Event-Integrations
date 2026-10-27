@@ -351,7 +351,36 @@ non-OK -> OK
 
 are separate transitions.
 
-Therefore the raise and clear filters must both be configured and should point to the same receiver.
+If you use separate filters for these transitions, configure both and point
+them to the same receiver. Two webhooks are needed for that filter design,
+not for every integration: one broader filter can cover both states.
+
+### One webhook for multiple conditions and both states
+
+For example, this filter sends every server update, including problems and
+recoveries:
+
+```text
+type eq 'compute-ops/server' and operation eq 'Updated'
+```
+
+Configure the consuming Shim or Bridge with:
+
+```dotenv
+SERVER_MONITORS=health,power,connection
+```
+
+COM selects the snapshots to send; the normalizer evaluates each enabled
+condition in every received snapshot and emits its own `raise` or `clear`.
+Each condition retains its independent correlation and de-duplication keys.
+The filter does not restrict the new value to an unhealthy state, so it also
+captures recoveries without a separate clear webhook.
+
+This broad filter also sends unrelated server updates. Narrower filters can
+reduce traffic, but must cover both problems and recoveries for every enabled
+condition. Healthy conditions still produce clears on received snapshots;
+post-only chat targets may show `Resolved` messages, subject to de-duplication,
+even when another condition caused the update.
 
 ---
 
@@ -433,8 +462,9 @@ supported pattern, not a workaround.
   down target for one condition's deployment doesn't affect another
   condition's deployment.
 
-**What it costs:** each deployment needs its own pair of COM webhook
-subscriptions (raise + clear) for the transition it monitors, its own
+**What it costs:** each deployment needs COM webhook filters covering both
+problems and recoveries for the conditions it monitors (a raise/clear pair or
+one broader filter, as described above), its own
 container/process, its own dedup store, and its own secrets, adding more
 moving parts than a single deployment with several conditions enabled. For
 **Relay + Shim**, each split deployment also needs its **own queue**: a
